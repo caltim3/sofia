@@ -68,6 +68,28 @@ Rules:
 - Minimum 2 entries, maximum 8 entries from a single brain dump
 - Never use HTML, only Markdown`
 
+const TODO_PROMPT = `You are Sofia parsing a todo list request. The user has described tasks they need to do.
+
+Your job: Parse the input into individual todo items. Output ONLY in this exact format, one block per task:
+
+---TODO---
+TITLE: <short actionable task title, max 80 chars>
+PRIORITY: <high|medium|low>
+NOTES: <optional one-line context or detail, leave empty if none>
+DUE: <YYYY-MM-DD if a date is mentioned or can be inferred, otherwise leave empty>
+---END---
+
+Rules:
+- Each task gets its own ---TODO--- block
+- Titles should be actionable (start with a verb when possible)
+- Assign priority based on urgency/importance cues in the text
+- If the user mentions "urgent", "ASAP", "today", "critical" → high
+- If the user mentions "eventually", "someday", "low priority", "when I get a chance" → low
+- Default to medium if unclear
+- Extract any dates mentioned
+- Minimum 1 todo, maximum 15 from a single input
+- Keep titles concise and clear`
+
 async function callAnthropic(systemPrompt, userMessage) {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -159,6 +181,26 @@ function parseBrainDump(text, allCategories) {
   return entries
 }
 
+function parseTodos(text) {
+  const todos = []
+  const blocks = text.split('---TODO---').filter(b => b.trim())
+  for (const block of blocks) {
+    const cleaned = block.replace('---END---', '').trim()
+    if (!cleaned) continue
+    const lines = cleaned.split('\n')
+    let title = '', priority = 'medium', notes = '', due = ''
+    for (const line of lines) {
+      if (line.startsWith('TITLE:')) title = line.replace('TITLE:', '').trim()
+      else if (line.startsWith('PRIORITY:')) priority = line.replace('PRIORITY:', '').trim().toLowerCase()
+      else if (line.startsWith('NOTES:')) notes = line.replace('NOTES:', '').trim()
+      else if (line.startsWith('DUE:')) due = line.replace('DUE:', '').trim()
+    }
+    if (!['high', 'medium', 'low'].includes(priority)) priority = 'medium'
+    if (title) todos.push({ title, priority, notes: notes || null, due_date: due && /^\d{4}-\d{2}-\d{2}$/.test(due) ? due : null })
+  }
+  return todos
+}
+
 function extractTags(content) {
   const words = content.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length > 4)
   const freq = {}
@@ -202,8 +244,25 @@ export async function POST(request) {
 
     try {
       let entries = []
+      let todos = []
 
-      if (mode === 'braindump') {
+      if (mode === 'todo') {
+        // Todo mode - parse into todo items
+        const rawText = await callModel(model, TODO_PROMPT, promptBody)
+        const parsed = parseTodos(rawText)
+
+        for (const t of parsed) {
+          const { data: todo } = await supabase.from('todos').insert({
+            user_id: user.id, title: t.title, priority: t.priority,
+            notes: t.notes, due_date: t.due_date, source_prompt_id: promptId,
+          }).select().single()
+          if (todo) todos.push(todo)
+        }
+
+        await supabase.from('prompts').update({ status: 'Completed', processed_at: new Date().toISOString() }).eq('id', promptId)
+        return NextResponse.json({ todos, mode: 'todo' })
+
+      } else if (mode === 'braindump') {
         // Brain dump mode - split into multiple entries
         const rawText = await callModel(model, BRAINDUMP_PROMPT, promptBody)
         const parsed = parseBrainDump(rawText, allCategories)
