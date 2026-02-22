@@ -17,6 +17,11 @@ const MODELS = [
   { id: 'claude', name: 'Claude', icon: '🟣' },
   { id: 'gpt4', name: 'GPT-4o', icon: '🟢' },
 ]
+const PRIORITY_CONFIG = {
+  high: { label: 'High', color: 'bg-red-100 text-red-700 border-red-300', dot: 'bg-red-500', sort: 0 },
+  medium: { label: 'Medium', color: 'bg-amber-100 text-amber-700 border-amber-300', dot: 'bg-amber-500', sort: 1 },
+  low: { label: 'Low', color: 'bg-green-100 text-green-700 border-green-300', dot: 'bg-green-500', sort: 2 },
+}
 
 export default function Sofia({ user, onLogout }) {
   const supabase = getSupabase()
@@ -27,6 +32,7 @@ export default function Sofia({ user, onLogout }) {
   const [projects, setProjects] = useState([])
   const [customCategories, setCustomCategories] = useState([])
   const [messages, setMessages] = useState([])
+  const [todos, setTodos] = useState([])
   const [loading, setLoading] = useState(true)
 
   // Navigation
@@ -63,6 +69,15 @@ export default function Sofia({ user, onLogout }) {
   const [newCatColor, setNewCatColor] = useState('#8a8478')
   const [assignProjectEntry, setAssignProjectEntry] = useState(null)
 
+  // Todo
+  const [showAddTodo, setShowAddTodo] = useState(false)
+  const [newTodoTitle, setNewTodoTitle] = useState('')
+  const [newTodoPriority, setNewTodoPriority] = useState('medium')
+  const [newTodoNotes, setNewTodoNotes] = useState('')
+  const [newTodoDue, setNewTodoDue] = useState('')
+  const [todoFilter, setTodoFilter] = useState('active') // active, completed, all
+  const [editingTodo, setEditingTodo] = useState(null)
+
   // Voice
   const [isListening, setIsListening] = useState(false)
 
@@ -79,16 +94,18 @@ export default function Sofia({ user, onLogout }) {
 
   async function loadAll() {
     setLoading(true)
-    const [{ data: p }, { data: e }, { data: pr }, { data: cc }] = await Promise.all([
+    const [{ data: p }, { data: e }, { data: pr }, { data: cc }, { data: td }] = await Promise.all([
       supabase.from('prompts').select('*').order('created_at', { ascending: false }),
       supabase.from('entries').select('*').order('created_at', { ascending: false }),
       supabase.from('projects').select('*').order('created_at', { ascending: false }),
       supabase.from('custom_categories').select('*').order('created_at', { ascending: true }),
+      supabase.from('todos').select('*').order('created_at', { ascending: false }),
     ])
     setPrompts(p || [])
     setEntries(e || [])
     setProjects(pr || [])
     setCustomCategories(cc || [])
+    setTodos(td || [])
     setLoading(false)
   }
 
@@ -103,9 +120,10 @@ export default function Sofia({ user, onLogout }) {
     const body = newPromptText.trim()
     const isDump = body.startsWith('#dump')
     const isChallenge = body.startsWith('#challenge')
-    const cleanBody = body.replace(/^#(dump|challenge)\s*/i, '')
+    const isTodo = body.startsWith('#todo') || body.toLowerCase().startsWith('todo')
+    const cleanBody = body.replace(/^#?(dump|challenge|todo)\s*/i, '')
     const title = newPromptTitle.trim() || cleanBody.slice(0, 60) + (cleanBody.length > 60 ? '...' : '')
-    const mode = isDump ? 'braindump' : isChallenge ? 'challenge' : 'standard'
+    const mode = isDump ? 'braindump' : isChallenge ? 'challenge' : isTodo ? 'todo' : 'standard'
 
     const { data: prompt, error } = await supabase
       .from('prompts')
@@ -118,7 +136,7 @@ export default function Sofia({ user, onLogout }) {
     setNewPromptText('')
     setNewPromptTitle('')
     setShowNewPrompt(false)
-    notify(isDump ? 'Brain dump submitted — parsing ideas...' : isChallenge ? 'Challenge mode — analyzing...' : 'Prompt submitted — processing...')
+    notify(isTodo ? 'Parsing todos...' : isDump ? 'Brain dump submitted — parsing ideas...' : isChallenge ? 'Challenge mode — analyzing...' : 'Prompt submitted — processing...')
     processPrompt(prompt, mode)
   }
 
@@ -136,11 +154,19 @@ export default function Sofia({ user, onLogout }) {
         body: JSON.stringify({ promptId: prompt.id, promptBody: prompt.body, model: prompt.model || selectedModel, mode }),
       })
       if (!res.ok) throw new Error(await res.text())
-      const { entries: newEntries, category } = await res.json()
+      const result = await res.json()
 
-      setEntries(prev => [...(newEntries || []), ...prev])
-      setPrompts(prev => prev.map(p => p.id === prompt.id ? { ...p, status: 'Completed', processed_at: new Date().toISOString() } : p))
-      notify(newEntries?.length > 1 ? `Brain dump: ${newEntries.length} entries created` : `Classified as ${category}`)
+      if (result.mode === 'todo' && result.todos) {
+        setTodos(prev => [...result.todos, ...prev])
+        setPrompts(prev => prev.map(p => p.id === prompt.id ? { ...p, status: 'Completed', processed_at: new Date().toISOString() } : p))
+        notify(`${result.todos.length} todo${result.todos.length > 1 ? 's' : ''} added`)
+        setView('todos')
+      } else {
+        const { entries: newEntries, category } = result
+        setEntries(prev => [...(newEntries || []), ...prev])
+        setPrompts(prev => prev.map(p => p.id === prompt.id ? { ...p, status: 'Completed', processed_at: new Date().toISOString() } : p))
+        notify(newEntries?.length > 1 ? `Brain dump: ${newEntries.length} entries created` : `Classified as ${category}`)
+      }
     } catch (err) {
       console.error(err)
       setPrompts(prev => prev.map(p => p.id === prompt.id ? { ...p, status: 'Failed' } : p))
@@ -148,6 +174,63 @@ export default function Sofia({ user, onLogout }) {
     }
     setProcessing(null)
   }
+
+  // ─── TODOS ───
+  async function addTodoManually() {
+    if (!newTodoTitle.trim()) return
+    const { data, error } = await supabase.from('todos').insert({
+      user_id: user.id, title: newTodoTitle.trim(), priority: newTodoPriority,
+      notes: newTodoNotes.trim() || null, due_date: newTodoDue || null,
+    }).select().single()
+    if (error) { notify('Failed to add todo', 'error'); return }
+    setTodos(prev => [data, ...prev])
+    setNewTodoTitle('')
+    setNewTodoNotes('')
+    setNewTodoDue('')
+    setNewTodoPriority('medium')
+    setShowAddTodo(false)
+    notify('Todo added')
+  }
+
+  async function toggleTodo(id) {
+    const todo = todos.find(t => t.id === id)
+    const completed = !todo.completed
+    await supabase.from('todos').update({
+      completed, completed_at: completed ? new Date().toISOString() : null,
+    }).eq('id', id)
+    setTodos(prev => prev.map(t => t.id === id ? { ...t, completed, completed_at: completed ? new Date().toISOString() : null } : t))
+  }
+
+  async function deleteTodo(id) {
+    await supabase.from('todos').delete().eq('id', id)
+    setTodos(prev => prev.filter(t => t.id !== id))
+  }
+
+  async function updateTodoPriority(id, priority) {
+    await supabase.from('todos').update({ priority }).eq('id', id)
+    setTodos(prev => prev.map(t => t.id === id ? { ...t, priority } : t))
+  }
+
+  async function updateTodoTitle(id, title) {
+    await supabase.from('todos').update({ title }).eq('id', id)
+    setTodos(prev => prev.map(t => t.id === id ? { ...t, title } : t))
+    setEditingTodo(null)
+  }
+
+  const activeTodoCount = todos.filter(t => !t.completed).length
+  const filteredTodos = (() => {
+    let filtered = todos
+    if (todoFilter === 'active') filtered = filtered.filter(t => !t.completed)
+    else if (todoFilter === 'completed') filtered = filtered.filter(t => t.completed)
+    // Sort: incomplete first, then by priority (high → medium → low), then by date
+    return filtered.sort((a, b) => {
+      if (a.completed !== b.completed) return a.completed ? 1 : -1
+      const pa = PRIORITY_CONFIG[a.priority]?.sort ?? 1
+      const pb = PRIORITY_CONFIG[b.priority]?.sort ?? 1
+      if (pa !== pb) return pa - pb
+      return new Date(b.created_at) - new Date(a.created_at)
+    })
+  })()
 
   // ─── CHAT ───
   async function sendChat() {
@@ -284,7 +367,6 @@ export default function Sofia({ user, onLogout }) {
     recognition.start()
     setIsListening(true)
     setShowNewPrompt(true)
-    // Store ref to stop later
     window._sofiaRecognition = recognition
   }
 
@@ -332,7 +414,6 @@ export default function Sofia({ user, onLogout }) {
   async function exportPDF(entryId) {
     const entry = entries.find(e => e.id === entryId)
     if (!entry) return
-    // Open print dialog for PDF
     const printWindow = window.open('', '_blank')
     const date = new Date(entry.created_at).toLocaleDateString()
     printWindow.document.write(`<!DOCTYPE html><html><head><title>${entry.title}</title>
@@ -410,13 +491,12 @@ ${simpleMarkdownToHtml(entry.content)}
     if (view === 'starred') filtered = filtered.filter(e => e.starred)
     else if (view.startsWith('project-')) filtered = filtered.filter(e => e.project_id === view.replace('project-', ''))
     else if (allCategories.includes(view)) filtered = filtered.filter(e => e.category === view)
-    else if (view !== 'all' && view !== 'inbox' && view !== 'archive' && view !== 'settings') return []
+    else if (view !== 'all' && view !== 'inbox' && view !== 'archive' && view !== 'settings' && view !== 'todos') return []
 
     if (searchQuery) {
       const q = searchQuery.toLowerCase()
       filtered = filtered.filter(e => e.title?.toLowerCase().includes(q) || e.content?.toLowerCase().includes(q) || e.tags?.some(t => t.includes(q)))
     }
-    // Pinned first, then by date
     return filtered.sort((a, b) => {
       if (a.pinned && !b.pinned) return -1
       if (!a.pinned && b.pinned) return 1
@@ -449,13 +529,11 @@ ${simpleMarkdownToHtml(entry.content)}
 
     return (
       <div className="min-h-screen bg-cream-100 flex flex-col lg:flex-row">
-        {/* Main entry */}
         <div className={`flex-1 overflow-auto ${showChat ? 'lg:border-r lg:border-cream-300' : ''}`}>
           <div className="max-w-3xl mx-auto px-4 sm:px-6 py-6 sm:py-10">
             <button onClick={() => { setSelectedEntry(null); setShowChat(false) }} className="text-cream-600 text-sm mb-4 hover:text-cream-800">← Back</button>
 
             <article className="bg-white rounded-xl p-5 sm:p-8 shadow-sm border border-cream-300">
-              {/* Top bar: category, pin, star */}
               <div className="flex items-center gap-2 mb-2 flex-wrap">
                 <span className={`${cc.bg} ${cc.text} px-3 py-1 rounded-full text-xs font-semibold`}>{getCatIcon(entry.category)} {entry.category}</span>
                 {project && <span className="bg-cream-200 text-cream-700 px-2 py-1 rounded-full text-xs">{project.icon} {project.name}</span>}
@@ -491,7 +569,6 @@ ${simpleMarkdownToHtml(entry.content)}
                 </div>
               )}
 
-              {/* Action buttons */}
               <div className="flex flex-wrap gap-2 mt-6 pt-4 border-t border-cream-300">
                 <button onClick={() => { setShowChat(!showChat) }} className="bg-ink-500 text-white px-3 py-2 rounded-lg text-xs font-medium">💬 Chat</button>
                 <button onClick={() => { setEditingEntry(entry.id); setEditContent(entry.content); setEditCategory(entry.category) }} className="bg-cream-200 text-cream-800 px-3 py-2 rounded-lg text-xs font-medium">✏️ Edit</button>
@@ -503,7 +580,6 @@ ${simpleMarkdownToHtml(entry.content)}
               </div>
             </article>
 
-            {/* Related Entries */}
             {related.length > 0 && (
               <div className="mt-6">
                 <h3 className="text-sm font-semibold text-cream-600 uppercase tracking-wider mb-3">🔗 Related Entries</h3>
@@ -522,7 +598,6 @@ ${simpleMarkdownToHtml(entry.content)}
               </div>
             )}
 
-            {/* Assign to Project Modal */}
             {assignProjectEntry && (
               <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={e => { if (e.target === e.currentTarget) setAssignProjectEntry(null) }}>
                 <div className="bg-white rounded-xl p-5 w-full max-w-sm shadow-xl">
@@ -541,7 +616,6 @@ ${simpleMarkdownToHtml(entry.content)}
           </div>
         </div>
 
-        {/* Chat Panel */}
         {showChat && (
           <div className="w-full lg:w-96 bg-white border-t lg:border-t-0 border-cream-300 flex flex-col h-[50vh] lg:h-screen lg:sticky lg:top-0">
             <div className="px-4 py-3 border-b border-cream-300 flex items-center justify-between">
@@ -624,6 +698,7 @@ ${simpleMarkdownToHtml(entry.content)}
 
         <nav className="flex-1 p-2 overflow-y-auto">
           <SidebarBtn icon="📥" label="Inbox" badge={inboxCount} active={view === 'inbox'} onClick={() => { setView('inbox'); setSidebarOpen(false) }} />
+          <SidebarBtn icon="✅" label="Todos" badge={activeTodoCount} active={view === 'todos'} onClick={() => { setView('todos'); setSidebarOpen(false) }} />
           <SidebarBtn icon="⭐" label="Starred" count={starredCount} active={view === 'starred'} onClick={() => { setView('starred'); setSidebarOpen(false) }} />
 
           <div className="px-3 pt-4 pb-1 text-[10px] font-semibold text-cream-100/30 uppercase tracking-[0.12em]">Categories</div>
@@ -663,7 +738,7 @@ ${simpleMarkdownToHtml(entry.content)}
         <header className="px-4 sm:px-6 py-3 flex items-center gap-3 border-b border-cream-300 bg-cream-100/80 backdrop-blur-sm sticky top-0 z-20">
           <button className="lg:hidden text-cream-700 text-xl" onClick={() => setSidebarOpen(true)}>☰</button>
           <h1 className="font-serif text-lg sm:text-xl text-ink-500 flex-shrink-0">
-            {view === 'inbox' ? 'Inbox' : view === 'archive' ? 'Archive' : view === 'all' ? 'All Entries' : view === 'starred' ? 'Starred' : view === 'settings' ? 'Settings' : view.startsWith('project-') ? projects.find(p => p.id === view.replace('project-',''))?.name || 'Project' : `${view}s`}
+            {view === 'inbox' ? 'Inbox' : view === 'archive' ? 'Archive' : view === 'all' ? 'All Entries' : view === 'starred' ? 'Starred' : view === 'settings' ? 'Settings' : view === 'todos' ? 'Todos' : view.startsWith('project-') ? projects.find(p => p.id === view.replace('project-',''))?.name || 'Project' : `${view}s`}
           </h1>
           <div className="flex-1 max-w-md">
             <input type="text" placeholder="Search..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
@@ -685,7 +760,6 @@ ${simpleMarkdownToHtml(entry.content)}
               <div className="bg-white rounded-2xl p-5 sm:p-7 w-full max-w-xl shadow-2xl animate-fade-up">
                 <h2 className="font-serif text-xl sm:text-2xl text-ink-500 mb-4">New Prompt</h2>
 
-                {/* Model selector */}
                 <div className="flex gap-2 mb-3">
                   {MODELS.map(m => (
                     <button key={m.id} onClick={() => setSelectedModel(m.id)}
@@ -697,7 +771,7 @@ ${simpleMarkdownToHtml(entry.content)}
 
                 <input type="text" placeholder="Title (optional)" value={newPromptTitle} onChange={e => setNewPromptTitle(e.target.value)}
                   className="w-full px-4 py-2.5 rounded-lg border border-cream-300 text-sm mb-3" />
-                <textarea placeholder="What's on your mind?&#10;&#10;Prefixes:&#10;#dump — brain dump (splits into multiple entries)&#10;#challenge — devil's advocate mode"
+                <textarea placeholder={"What's on your mind?\n\nPrefixes:\n#dump — brain dump (splits into multiple entries)\n#challenge — devil's advocate mode\n#todo — parse into todo items"}
                   value={newPromptText} onChange={e => setNewPromptText(e.target.value)}
                   onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submitPrompt() }}
                   className="w-full min-h-[160px] p-4 rounded-lg border border-cream-300 text-sm leading-relaxed resize-y" autoFocus />
@@ -709,7 +783,7 @@ ${simpleMarkdownToHtml(entry.content)}
                 )}
 
                 <div className="flex justify-between items-center mt-4">
-                  <span className="text-xs text-cream-500">⌘/Ctrl+Enter to submit · #dump · #challenge</span>
+                  <span className="text-xs text-cream-500">⌘+Enter to submit · #dump · #challenge · #todo</span>
                   <div className="flex gap-2">
                     <button onClick={() => { setShowNewPrompt(false); stopVoice() }} className="border border-cream-400 px-4 py-2 rounded-lg text-sm text-cream-600">Cancel</button>
                     <button onClick={submitPrompt} disabled={!newPromptText.trim()}
@@ -720,10 +794,122 @@ ${simpleMarkdownToHtml(entry.content)}
             </div>
           )}
 
+          {/* ─── TODOS VIEW ─── */}
+          {view === 'todos' && (
+            <div className="max-w-2xl mx-auto">
+              {/* Header with filter and add button */}
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex gap-1">
+                  {['active', 'completed', 'all'].map(f => (
+                    <button key={f} onClick={() => setTodoFilter(f)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${todoFilter === f ? 'bg-ink-500 text-white' : 'bg-cream-200 text-cream-600'}`}>
+                      {f.charAt(0).toUpperCase() + f.slice(1)}
+                      {f === 'active' && activeTodoCount > 0 && <span className="ml-1 opacity-70">({activeTodoCount})</span>}
+                    </button>
+                  ))}
+                </div>
+                <button onClick={() => setShowAddTodo(!showAddTodo)} className="bg-ink-500 text-white px-3 py-1.5 rounded-lg text-xs font-medium">+ Add Todo</button>
+              </div>
+
+              {/* Quick add form */}
+              {showAddTodo && (
+                <div className="bg-white rounded-xl p-4 border border-cream-300 mb-4">
+                  <div className="flex gap-2 mb-2">
+                    <input type="text" placeholder="What needs to be done?" value={newTodoTitle} onChange={e => setNewTodoTitle(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') addTodoManually() }}
+                      className="flex-1 px-3 py-2 rounded-lg border border-cream-300 text-sm" autoFocus />
+                  </div>
+                  <div className="flex gap-2 items-center flex-wrap">
+                    <div className="flex gap-1">
+                      {['high', 'medium', 'low'].map(p => (
+                        <button key={p} onClick={() => setNewTodoPriority(p)}
+                          className={`px-2.5 py-1 rounded text-xs font-medium border transition-all ${newTodoPriority === p ? PRIORITY_CONFIG[p].color + ' border-current' : 'border-cream-300 text-cream-500'}`}>
+                          {PRIORITY_CONFIG[p].label}
+                        </button>
+                      ))}
+                    </div>
+                    <input type="date" value={newTodoDue} onChange={e => setNewTodoDue(e.target.value)}
+                      className="px-2 py-1 rounded-lg border border-cream-300 text-xs" />
+                    <input type="text" placeholder="Notes (optional)" value={newTodoNotes} onChange={e => setNewTodoNotes(e.target.value)}
+                      className="flex-1 min-w-[120px] px-2 py-1 rounded-lg border border-cream-300 text-xs" />
+                    <button onClick={addTodoManually} disabled={!newTodoTitle.trim()}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold text-white ${newTodoTitle.trim() ? 'bg-ink-500' : 'bg-cream-400'}`}>Add</button>
+                  </div>
+                </div>
+              )}
+
+              {/* Todo list */}
+              {filteredTodos.length === 0 ? (
+                <EmptyState icon="✅" title={todoFilter === 'completed' ? 'No completed todos' : 'No todos yet'}
+                  subtitle={'Type #todo in a prompt to add tasks with AI, or click "+ Add Todo" above.'}
+                  action={() => setShowAddTodo(true)} actionLabel="+ Add Todo" />
+              ) : (
+                <div className="space-y-1">
+                  {filteredTodos.map(todo => {
+                    const pc = PRIORITY_CONFIG[todo.priority] || PRIORITY_CONFIG.medium
+                    const isOverdue = todo.due_date && !todo.completed && new Date(todo.due_date) < new Date(new Date().toDateString())
+                    return (
+                      <div key={todo.id}
+                        className={`bg-white rounded-lg border border-cream-300 p-3 flex items-start gap-3 group transition-all hover:shadow-sm ${todo.completed ? 'opacity-50' : ''}`}>
+                        {/* Checkbox */}
+                        <button onClick={() => toggleTodo(todo.id)}
+                          className={`flex-shrink-0 mt-0.5 w-5 h-5 rounded border-2 flex items-center justify-center transition-all ${todo.completed ? 'bg-green-500 border-green-500 text-white' : 'border-cream-400 hover:border-ink-500'}`}>
+                          {todo.completed && <span className="text-xs">✓</span>}
+                        </button>
+
+                        {/* Content */}
+                        <div className="flex-1 min-w-0">
+                          {editingTodo === todo.id ? (
+                            <input type="text" defaultValue={todo.title} autoFocus
+                              onBlur={e => updateTodoTitle(todo.id, e.target.value)}
+                              onKeyDown={e => { if (e.key === 'Enter') updateTodoTitle(todo.id, e.target.value); if (e.key === 'Escape') setEditingTodo(null) }}
+                              className="w-full px-2 py-1 rounded border border-cream-300 text-sm" />
+                          ) : (
+                            <div onClick={() => setEditingTodo(todo.id)}
+                              className={`text-sm cursor-text ${todo.completed ? 'line-through text-cream-500' : 'text-ink-500'}`}>
+                              {todo.title}
+                            </div>
+                          )}
+                          <div className="flex items-center gap-2 mt-1 flex-wrap">
+                            {/* Priority badge */}
+                            <select value={todo.priority} onChange={e => updateTodoPriority(todo.id, e.target.value)}
+                              className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border appearance-none cursor-pointer ${pc.color}`}>
+                              <option value="high">High</option>
+                              <option value="medium">Medium</option>
+                              <option value="low">Low</option>
+                            </select>
+                            {todo.due_date && (
+                              <span className={`text-[10px] ${isOverdue ? 'text-red-500 font-semibold' : 'text-cream-500'}`}>
+                                {isOverdue ? '⚠️ ' : '📅 '}{new Date(todo.due_date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                              </span>
+                            )}
+                            {todo.notes && <span className="text-[10px] text-cream-500 truncate max-w-[200px]">{todo.notes}</span>}
+                          </div>
+                        </div>
+
+                        {/* Delete */}
+                        <button onClick={() => deleteTodo(todo.id)}
+                          className="flex-shrink-0 text-cream-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all text-sm">
+                          ✕
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+
+              {/* Summary bar */}
+              {todos.length > 0 && (
+                <div className="mt-4 text-center text-xs text-cream-500">
+                  {activeTodoCount} active · {todos.filter(t => t.completed).length} completed · {todos.length} total
+                </div>
+              )}
+            </div>
+          )}
+
           {/* ─── SETTINGS VIEW ─── */}
           {view === 'settings' && (
             <div className="max-w-2xl mx-auto space-y-6">
-              {/* Projects */}
               <div className="bg-white rounded-xl p-5 border border-cream-300">
                 <h3 className="font-serif text-lg text-ink-500 mb-4">📁 Projects</h3>
                 <div className="flex gap-2 mb-3">
@@ -741,7 +927,6 @@ ${simpleMarkdownToHtml(entry.content)}
                 ))}
               </div>
 
-              {/* Custom Categories */}
               <div className="bg-white rounded-xl p-5 border border-cream-300">
                 <h3 className="font-serif text-lg text-ink-500 mb-4">🏷️ Custom Categories</h3>
                 <div className="flex gap-2 mb-3">
@@ -760,7 +945,6 @@ ${simpleMarkdownToHtml(entry.content)}
                 ))}
               </div>
 
-              {/* Notion Config Info */}
               <div className="bg-white rounded-xl p-5 border border-cream-300">
                 <h3 className="font-serif text-lg text-ink-500 mb-2">📓 Notion Sync</h3>
                 <p className="text-sm text-cream-600 leading-relaxed">To enable Notion sync, add these environment variables in Vercel:</p>
@@ -771,7 +955,6 @@ ${simpleMarkdownToHtml(entry.content)}
                 <p className="text-xs text-cream-500 mt-2">Create an integration, share your database with it, then add the keys.</p>
               </div>
 
-              {/* AI Models Info */}
               <div className="bg-white rounded-xl p-5 border border-cream-300">
                 <h3 className="font-serif text-lg text-ink-500 mb-2">🤖 AI Models</h3>
                 <p className="text-sm text-cream-600 leading-relaxed">Claude is enabled by default. To add GPT-4o, add this in Vercel environment variables:</p>
@@ -786,7 +969,7 @@ ${simpleMarkdownToHtml(entry.content)}
           {view === 'inbox' && (
             <>
               {prompts.filter(p => p.status !== 'Archived').length === 0 ? (
-                <EmptyState icon="📭" title="Your inbox is empty" subtitle="Submit a prompt, brain dump (#dump), or challenge (#challenge)."
+                <EmptyState icon="📭" title="Your inbox is empty" subtitle="Submit a prompt, brain dump (#dump), challenge (#challenge), or todo (#todo)."
                   action={() => setShowNewPrompt(true)} actionLabel="+ New Prompt" />
               ) : (
                 <div className="flex flex-col gap-2">
@@ -796,6 +979,7 @@ ${simpleMarkdownToHtml(entry.content)}
                         <div className="font-medium text-ink-500 truncate flex items-center gap-2">
                           {p.mode === 'braindump' && <span className="text-xs bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">DUMP</span>}
                           {p.mode === 'challenge' && <span className="text-xs bg-red-100 text-red-700 px-1.5 py-0.5 rounded">CHALLENGE</span>}
+                          {p.mode === 'todo' && <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded">TODO</span>}
                           {p.title}
                         </div>
                         <div className="text-xs text-cream-500 flex items-center gap-2 mt-1">
@@ -811,7 +995,11 @@ ${simpleMarkdownToHtml(entry.content)}
                             {processing === p.id ? 'Processing...' : p.status === 'Failed' ? 'Retry' : 'Process'}
                           </button>
                         )}
-                        {p.status === 'Completed' && (
+                        {p.status === 'Completed' && p.mode === 'todo' && (
+                          <button onClick={() => { setView('todos'); setSidebarOpen(false) }}
+                            className="border border-green-500 text-green-600 px-3 py-1.5 rounded-lg text-xs font-medium">View Todos</button>
+                        )}
+                        {p.status === 'Completed' && p.mode !== 'todo' && (
                           <button onClick={() => { const entry = entries.find(e => e.source_prompt_id === p.id); if (entry) setSelectedEntry(entry) }}
                             className="border border-gold-500 text-gold-500 px-3 py-1.5 rounded-lg text-xs font-medium">View</button>
                         )}
