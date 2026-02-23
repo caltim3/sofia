@@ -204,8 +204,12 @@ export async function POST(request) {
       userId = promptRecord?.user_id ?? null
     }
     if (!userId) {
-      const { data: { users } } = await supabase.auth.admin.listUsers({ perPage: 1 })
-      userId = users?.[0]?.id ?? null
+      try {
+        const result = await supabase.auth.admin.listUsers({ perPage: 1 })
+        userId = result?.data?.users?.[0]?.id ?? null
+      } catch (e) {
+        console.error('listUsers failed:', e.message)
+      }
     }
 
     const isBrainDump = /^#dump\s/i.test(prompt.trim()) || mode === 'brain_dump'
