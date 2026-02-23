@@ -223,8 +223,8 @@ export async function POST(request) {
       const inserted = []
       for (const e of parsed) {
         const { data } = await supabase.from('entries').insert({
-          user_id: userId, title: e.title, body: cleanPrompt,
-          response: e.content, category: e.category, model: modelLabel, source: 'brain_dump',
+          user_id: userId, title: e.title, original_content: cleanPrompt,
+          content: e.content, category: e.category, model: modelLabel,
         }).select().single()
         if (data) inserted.push(data)
       }
@@ -244,7 +244,7 @@ export async function POST(request) {
     const title = generateTitle(cleanPrompt)
 
     const { data: entry, error } = await supabase.from('entries').insert({
-      user_id: userId, title, body: cleanPrompt, response: aiResponse, category, model: modelLabel,
+      user_id: userId, title, original_content: cleanPrompt, content: aiResponse, category, model: modelLabel,
     }).select().single()
 
     if (error) throw error
