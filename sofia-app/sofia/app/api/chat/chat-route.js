@@ -90,7 +90,7 @@ export async function POST(request) {
     }
 
     const { data: entry } = await supabase
-      .from('entries').select('title, original_content, content, category').eq('id', entryId).single()
+      .from('entries').select('title, original_content, body, content, response, category').eq('id', entryId).single()
 
     if (!entry) return NextResponse.json({ error: 'Entry not found' }, { status: 404 })
 
@@ -98,8 +98,8 @@ export async function POST(request) {
       .from('messages').select('role, content').eq('entry_id', entryId).order('created_at', { ascending: true })
 
     const conversationMessages = [
-      { role: 'user', content: entry.original_content || entry.title },
-      { role: 'assistant', content: entry.content || 'I have analyzed this entry.' },
+      { role: 'user', content: entry.body || entry.original_content || entry.title },
+      { role: 'assistant', content: entry.response || entry.content || 'I have analyzed this entry.' },
       ...(priorMessages || []).map(m => ({ role: m.role, content: m.content })),
       { role: 'user', content: message },
     ]
