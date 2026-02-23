@@ -32,10 +32,7 @@ Tone Rule
 - Otherwise limit to under 1000 words.
 
 **Domain Detection**
-Before writing the response:
-- Identify the domain(s): historical, technical, business, finance, legal, personal, creative, music, procurement, etc.
-- Identify intent: explanation, evaluation, decision, execution, or procurement.
-- Apply the appropriate depth model.
+Before writing the response, identify the domain(s) and intent, then apply the appropriate depth model.
 
 **Domain Depth Models**
 
@@ -45,7 +42,7 @@ Before writing the response:
 
 2. Technical / Engineering / Software
    - Define system boundaries. Explain mechanisms end-to-end.
-   - Identify dependencies and failure modes. Provide diagnostics and quality indicators.
+   - Identify dependencies and failure modes.
 
 3. Business / Strategy
    - Define objective and constraints. Identify value drivers and structural forces.
@@ -54,14 +51,14 @@ Before writing the response:
 4. Finance / Legal / Regulatory
    - Identify governing rules and thresholds.
    - Highlight timelines, compliance gates, documentation.
-   - Provide checklist and decision tree. Flag uncertainties requiring verification.
+   - Flag uncertainties requiring verification.
 
 5. Personal / Health / Lifestyle
    - Provide measurable guidance. Identify risks and escalation points.
 
 6. Creative / Writing
    - Improve clarity, logic, structure, and persuasion.
-   - Maintain voice and audience alignment. Provide rationale for major changes.
+   - Maintain voice and audience alignment.
 
 7. Music / Jazz / Theory
    - Apply domain-specific terminology accurately (modes, chord-scale relationships, voice leading, bebop conventions).
@@ -69,14 +66,13 @@ Before writing the response:
    - Be technically precise about harmony, rhythm, and form.
 
 **Type Router**
-
-- Research: Build accurate understanding. Restate scope briefly. Use concrete details.
-- Brainstorm: Stress-test ideas. Identify assumptions, failure modes, second-order effects. Conclude with strengthen/reframe/abandon.
-- Decision: Define the decision precisely. Compare viable options. Identify asymmetric risks. Give a recommendation.
-- Draft: Rewrite clearly and concisely. Improve structure and persuasion. Include "Rationale for Changes."
-- Tasks: Clarify and reorganize tasks. Do not add new tasks. Keep under 200 words.
-- Observation: Extract implications and patterns. Distinguish temporary from durable effects.
-- Shopping: Name real products, realistic prices, real retailers. Use three tiers: Basic/Normal/Luxury. End with bold recommendation.
+- Research: Build accurate understanding. Use concrete details.
+- Brainstorm: Stress-test ideas. Identify assumptions and failure modes.
+- Decision: Compare viable options. Identify asymmetric risks. Give a recommendation.
+- Draft: Rewrite clearly. Improve structure. Include rationale for changes.
+- Tasks: Clarify and reorganize. Do not add new tasks.
+- Observation: Extract implications. Distinguish temporary from durable effects.
+- Shopping: Name real products, realistic prices, real retailers. Three tiers. Bold recommendation.
 
 **Structural Integrity Rule**
 - Do not force managerial frameworks onto purely descriptive topics.
@@ -84,45 +80,42 @@ Before writing the response:
 - Do not output surface-level generalities when specifics are available.`
 
 // ─────────────────────────────────────────────
-// CATEGORY LIST (explicit — used for classification)
+// CATEGORY DEFINITIONS
 // ─────────────────────────────────────────────
-const CATEGORIES = {
-  work: 'Work / DevEngine / business / energy / solar / BESS / finance / deals / regulatory / professional tasks',
-  music: 'Music / jazz / guitar / theory / harmony / bebop / Barry Harris / scales / chords / songs / practice / recordings / teaching',
-  personal: 'Personal life / health / relationships / home / Ghent / routines / lifestyle / travel',
-  ideas: 'Ideas / concepts / brainstorming / hypotheticals / future thinking',
-  books: 'Books / reading / literature / summaries / analysis',
-  shopping: 'Shopping / procurement / gear / products / purchases / equipment',
-  todos: 'Tasks / todos / action items / reminders / to-do lists',
+const VALID_CATEGORIES = ['work', 'music', 'personal', 'ideas', 'books', 'shopping', 'todos', 'travel/food']
+
+const CATEGORY_DESCRIPTIONS = {
+  work:          'DevEngine, business, energy, solar, BESS, finance, deals, Spring Lane, regulatory, ITC, FEOC, professional tasks',
+  music:         'jazz, guitar, chords, scales, bebop, harmony, Barry Harris, music theory, intervals, modes, improvisation, songs, practice, recordings, teaching',
+  personal:      'personal life, health, relationships, home, Ghent, routines, lifestyle',
+  'travel/food': 'travel, restaurants, food, trips, places to visit',
+  ideas:         'ideas, concepts, brainstorming, hypotheticals, future thinking',
+  books:         'books, reading, literature, summaries, analysis',
+  shopping:      'shopping, procurement, gear, products, purchases, equipment',
+  todos:         'tasks, todos, action items, reminders, to-do lists',
 }
 
 // ─────────────────────────────────────────────
 // Brain dump prompt
 // ─────────────────────────────────────────────
-const BRAINDUMP_PROMPT = `You are Sofia processing a brain dump. The user has written a stream of consciousness containing multiple ideas, thoughts, and topics.
-
-Parse it into SEPARATE distinct thoughts/ideas. For EACH thought, output it in this exact format:
+const BRAINDUMP_PROMPT = `You are Sofia processing a brain dump. Parse it into SEPARATE distinct thoughts/ideas. For EACH thought, output exactly:
 
 ---ENTRY---
-CATEGORY: <work|music|personal|ideas|books|shopping|todos>
+CATEGORY: <work|music|personal|ideas|books|shopping|todos|travel/food>
 TITLE: <short descriptive title>
 
-<Full Markdown content for this thought, using the Sofia Reasoning Engine standards: specific, decision-useful, no filler>
+<Full Markdown content using Sofia Reasoning Engine standards: specific, decision-useful, no filler>
 
 ---END---
 
 Rules:
 - Each thought gets its own ---ENTRY--- block
-- Classify each independently using the correct category
-- Give each a clear, specific title
-- Expand on each thought with structure and detail
-- Minimum 2 entries, maximum 8 entries from a single brain dump
-- For music-related thoughts, classify as "music" — not "personal"
-- For work/business thoughts, classify as "work" — not "ideas"
+- Classify each independently — music content MUST be "music", business content MUST be "work"
+- Minimum 2 entries, maximum 8 entries
 - Never use HTML, only Markdown`
 
 // ─────────────────────────────────────────────
-// Model callers — LATEST MODELS
+// Model callers
 // ─────────────────────────────────────────────
 async function callAnthropic(systemPrompt, userMessage) {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -133,7 +126,7 @@ async function callAnthropic(systemPrompt, userMessage) {
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514', // Claude Sonnet 4 — latest
+      model: 'claude-sonnet-4-20250514',
       max_tokens: 4000,
       system: systemPrompt,
       messages: [{ role: 'user', content: userMessage }],
@@ -157,7 +150,7 @@ async function callOpenAI(systemPrompt, userMessage) {
       'Authorization': `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: 'gpt-4o', // GPT-4o — latest
+      model: 'gpt-4o',
       max_tokens: 4000,
       messages: [
         { role: 'system', content: systemPrompt },
@@ -174,74 +167,57 @@ async function callOpenAI(systemPrompt, userMessage) {
 }
 
 // ─────────────────────────────────────────────
-// Classify category — explicit + AI-assisted
+// Category classification — keyword-first, AI fallback
 // ─────────────────────────────────────────────
 async function classifyCategory(prompt, aiResponse) {
-  const classifySystemPrompt = `You are a precise content classifier for a second brain app.
+  const combined = (prompt + ' ' + aiResponse).toLowerCase()
 
-Given a user's prompt and the AI response to it, classify it into EXACTLY ONE of these categories:
+  // Hard rules — don't call AI for obvious cases
+  if (/jazz|bebop|barry harris|chord voic|music theory|guitar lick|ii[\s-]v|tritone sub|chord tone|arpeggio|comping|walking bass|lead sheet|fake book|pentatonic|dorian|mixolydian|lydian|phrygian|locrian|kenny burrell|wes montgomery|pat metheny|joe pass|grant green|freddie green/.test(combined)) return 'music'
+  if (/devengin|spring lane|solar project|bess|battery energy|feoc|itc adder|safe harbor|ppa|offtake|megawatt|kwh|utility scale|net metering|energy storage|project finance|tax equity/.test(combined)) return 'work'
+  if (/\btodo\b|action item|to-do|checklist/.test(combined)) return 'todos'
+  if (/\bbook\b|novel|reading|chapter|author|literature|memoir|biography/.test(combined)) return 'books'
+  if (/buy|purchase|price range|product review|brand comparison|retailer|best.*under \$/.test(combined)) return 'shopping'
+  if (/restaurant|where to eat|trip to|travel|visiting/.test(combined)) return 'travel/food'
 
-work     — ${CATEGORIES.work}
-music    — ${CATEGORIES.music}
-personal — ${CATEGORIES.personal}
-ideas    — ${CATEGORIES.ideas}
-books    — ${CATEGORIES.books}
-shopping — ${CATEGORIES.shopping}
-todos    — ${CATEGORIES.todos}
+  // AI fallback
+  const classifySystem = `You classify content for a second brain app. Given a prompt and AI response, return EXACTLY ONE of these category names with no other text, punctuation, or explanation:
+work, music, personal, ideas, books, shopping, todos, travel/food
 
-RULES:
-- If the content mentions jazz, guitar, chords, scales, harmony, bebop, Barry Harris, music theory, or any musical instrument → ALWAYS return "music"
-- If the content mentions DevEngine, solar, BESS, energy, deals, Spring Lane, ITC, FEOC, investors, or business finance → ALWAYS return "work"
-- If the content is a task list or action items → return "todos"
-- Return ONLY the single category word. No punctuation, no explanation.`
-
-  const classifyInput = `User prompt: "${prompt}"\n\nAI response summary: "${aiResponse.slice(0, 500)}"`
+Definitions:
+${Object.entries(CATEGORY_DESCRIPTIONS).map(([k, v]) => `${k}: ${v}`).join('\n')}`
 
   try {
-    const result = await callAnthropic(classifySystemPrompt, classifyInput)
-    const cleaned = result.trim().toLowerCase().replace(/[^a-z]/g, '')
-    return CATEGORIES[cleaned] ? cleaned : 'ideas'
+    const result = await callAnthropic(
+      classifySystem,
+      `Prompt: "${prompt.slice(0, 300)}"\n\nResponse preview: "${aiResponse.slice(0, 300)}"`
+    )
+    const cleaned = result.trim().toLowerCase().replace(/\s/g, '').replace(/[^a-z/]/g, '')
+    return VALID_CATEGORIES.includes(cleaned) ? cleaned : 'ideas'
   } catch {
-    // Fallback: keyword detection
-    const combined = (prompt + ' ' + aiResponse).toLowerCase()
-    if (/jazz|guitar|chord|scale|bebop|harmony|barry harris|music|note|interval|mode|improvise|solo|rhythm|melody/.test(combined)) return 'music'
-    if (/devengi|solar|bess|battery|energy|deal|spring lane|itc|feoc|investor|megawatt|kwh|ppa|offtake/.test(combined)) return 'work'
-    if (/todo|task|action item|reminder|to-do|checklist/.test(combined)) return 'todos'
-    if (/book|novel|reading|chapter|author|literature/.test(combined)) return 'books'
-    if (/buy|purchase|price|product|brand|retailer|shop/.test(combined)) return 'shopping'
-    if (/ghent|house|home|personal|health|travel|family/.test(combined)) return 'personal'
     return 'ideas'
   }
 }
 
 // ─────────────────────────────────────────────
-// Generate title from prompt
+// Helpers
 // ─────────────────────────────────────────────
 function generateTitle(prompt) {
   const cleaned = prompt.replace(/^#(dump|short|challenge)\s*/i, '').trim()
-  if (cleaned.length <= 60) return cleaned
-  return cleaned.slice(0, 57) + '...'
+  return cleaned.length <= 60 ? cleaned : cleaned.slice(0, 57) + '...'
 }
 
-// ─────────────────────────────────────────────
-// Parse brain dump response into entries
-// ─────────────────────────────────────────────
 function parseBrainDump(raw) {
   const blocks = raw.split('---ENTRY---').slice(1)
   return blocks.map(block => {
     const end = block.indexOf('---END---')
     const content = end > -1 ? block.slice(0, end).trim() : block.trim()
     const lines = content.split('\n')
-
-    let category = 'ideas'
-    let title = 'Thought'
-    let bodyLines = []
-    let headerDone = false
-
+    let category = 'ideas', title = 'Thought', bodyLines = [], headerDone = false
     for (const line of lines) {
       if (!headerDone && line.startsWith('CATEGORY:')) {
         const val = line.replace('CATEGORY:', '').trim().toLowerCase()
-        category = CATEGORIES[val] ? val : 'ideas'
+        category = VALID_CATEGORIES.includes(val) ? val : 'ideas'
       } else if (!headerDone && line.startsWith('TITLE:')) {
         title = line.replace('TITLE:', '').trim()
         headerDone = true
@@ -249,7 +225,6 @@ function parseBrainDump(raw) {
         bodyLines.push(line)
       }
     }
-
     return { title, category, content: bodyLines.join('\n').trim() }
   }).filter(e => e.title && e.content)
 }
@@ -260,76 +235,112 @@ function parseBrainDump(raw) {
 export async function POST(request) {
   try {
     const authHeader = request.headers.get('authorization')
-    if (!authHeader) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-    const supabase = createClient(
+    // Try user-scoped auth first (anon key + Bearer token from frontend session)
+    let supabase = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL,
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
-      { global: { headers: { Authorization: authHeader } } }
+      authHeader ? { global: { headers: { Authorization: authHeader } } } : {}
     )
 
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    let user = null
+    if (authHeader) {
+      const { data } = await supabase.auth.getUser()
+      user = data?.user ?? null
+    }
+
+    // Fallback: service role key (compatible with older auth pattern in this app)
+    if (!user && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      supabase = createClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL,
+        process.env.SUPABASE_SERVICE_ROLE_KEY
+      )
+      if (authHeader) {
+        const token = authHeader.replace('Bearer ', '')
+        const { data } = await supabase.auth.getUser(token)
+        user = data?.user ?? null
+      }
+    }
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
 
     const body = await request.json()
-    const { prompt, model = 'claude' } = body
+    // Accept both old field name (promptBody) and new (prompt)
+    const { prompt: newPrompt, promptBody, promptId, model = 'claude', mode } = body
+    const prompt = newPrompt || promptBody
 
     if (!prompt?.trim()) {
       return NextResponse.json({ error: 'Prompt is required' }, { status: 400 })
     }
 
-    const isBrainDump = /^#dump\s/i.test(prompt.trim())
+    const isBrainDump = /^#dump\s/i.test(prompt.trim()) || mode === 'brain_dump'
+    const isChallenge = /^#challenge\s/i.test(prompt.trim()) || mode === 'challenge'
     const caller = model === 'gpt4' ? callOpenAI : callAnthropic
+    const modelLabel = model === 'gpt4' ? 'gpt-4o' : 'claude-sonnet-4'
 
-    // ── Brain Dump ──
+    // ── Brain Dump ──────────────────────────────
     if (isBrainDump) {
       const cleanPrompt = prompt.replace(/^#dump\s*/i, '').trim()
       const raw = await caller(BRAINDUMP_PROMPT, cleanPrompt)
-      const entries = parseBrainDump(raw)
+      const parsed = parseBrainDump(raw)
 
-      if (entries.length === 0) {
+      if (parsed.length === 0) {
         return NextResponse.json({ error: 'Could not parse brain dump' }, { status: 500 })
       }
 
       const inserted = []
-      for (const entry of entries) {
-        const { data, error } = await supabase.from('entries').insert({
+      for (const e of parsed) {
+        const { data } = await supabase.from('entries').insert({
           user_id: user.id,
-          title: entry.title,
+          title: e.title,
           body: cleanPrompt,
-          response: entry.content,
-          category: entry.category,
-          model: model === 'gpt4' ? 'gpt-4o' : 'claude-sonnet-4',
+          response: e.content,
+          category: e.category,
+          model: modelLabel,
           source: 'brain_dump',
         }).select().single()
-        if (!error && data) inserted.push(data)
+        if (data) inserted.push(data)
+      }
+
+      if (promptId) {
+        await supabase.from('prompts')
+          .update({ status: 'Completed', processed_at: new Date().toISOString() })
+          .eq('id', promptId)
       }
 
       return NextResponse.json({ entries: inserted, type: 'brain_dump' })
     }
 
-    // ── Standard Entry ──
-    const aiResponse = await caller(SOFIA_SYSTEM_PROMPT, prompt)
+    // ── Standard + Challenge Mode ───────────────
+    const systemPrompt = isChallenge
+      ? SOFIA_SYSTEM_PROMPT + '\n\nAdditional: This is challenge/devil\'s advocate mode. Steelman the opposite view rigorously. Find genuine weaknesses. Do not be a pushover.'
+      : SOFIA_SYSTEM_PROMPT
 
-    // Classify category with strong rules
-    const category = await classifyCategory(prompt, aiResponse)
+    const cleanPrompt = prompt.replace(/^#(short|challenge)\s*/i, '').trim()
+    const aiResponse = await caller(systemPrompt, cleanPrompt)
+    const category = await classifyCategory(cleanPrompt, aiResponse)
+    const title = generateTitle(cleanPrompt)
 
-    // Generate title
-    const title = generateTitle(prompt)
-
-    // Save to Supabase
     const { data: entry, error } = await supabase.from('entries').insert({
       user_id: user.id,
       title,
-      body: prompt,
+      body: cleanPrompt,
       response: aiResponse,
       category,
-      model: model === 'gpt4' ? 'gpt-4o' : 'claude-sonnet-4',
+      model: modelLabel,
     }).select().single()
 
     if (error) throw error
 
-    return NextResponse.json({ entry })
+    if (promptId) {
+      await supabase.from('prompts')
+        .update({ status: 'Completed', processed_at: new Date().toISOString() })
+        .eq('id', promptId)
+    }
+
+    return NextResponse.json({ entries: [entry], category, type: 'standard' })
 
   } catch (err) {
     console.error('Process error:', err)
