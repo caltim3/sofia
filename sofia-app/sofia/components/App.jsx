@@ -185,12 +185,16 @@ export default function SofiaApp() {
         }),
       });
 
-      const data = await res.json();
+ const data = await res.json();
       if (data.success) {
         setInput('');
         setSelectedTemplate('freeform');
         setTemplateData({});
-        fetchEntries();
+        if (data.entry) {
+          setEntries(prev => [data.entry, ...prev]);
+        } else {
+          fetchEntries();
+        }
       } else {
         alert('Processing error: ' + (data.error || 'Unknown error'));
       }
@@ -225,12 +229,16 @@ export default function SofiaApp() {
         }),
       });
 
-      const result = await res.json();
+ const result = await res.json();
       if (result.success) {
         setInput('');
         setSelectedTemplate('freeform');
         setTemplateData({});
-        fetchEntries();
+        if (result.entry) {
+          setEntries(prev => [result.entry, ...prev]);
+        } else {
+          fetchEntries();
+        }
       } else {
         alert('Processing error: ' + (result.error || 'Unknown error'));
       }
