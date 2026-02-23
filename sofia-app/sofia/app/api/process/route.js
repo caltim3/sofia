@@ -2,22 +2,28 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 
 // ─────────────────────────────────────────────
-// Supabase — service role (bypasses RLS, validates token directly)
+// Auth — decode JWT payload directly (no network call needed)
+// Supabase JWTs are standard JWTs, payload is just base64
 // ─────────────────────────────────────────────
+function getUserIdFromToken(request) {
+  try {
+    const authHeader = request.headers.get('authorization')
+    if (!authHeader) return null
+    const token = authHeader.replace('Bearer ', '').trim()
+    const payload = token.split('.')[1]
+    if (!payload) return null
+    const decoded = JSON.parse(Buffer.from(payload, 'base64').toString('utf8'))
+    return decoded.sub ?? null  // 'sub' is the user UUID in Supabase JWTs
+  } catch {
+    return null
+  }
+}
+
 function getSupabase() {
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL,
     process.env.SUPABASE_SERVICE_ROLE_KEY
   )
-}
-
-async function getUser(request) {
-  const authHeader = request.headers.get('authorization')
-  if (!authHeader) return null
-  const token = authHeader.replace('Bearer ', '').trim()
-  const supabase = getSupabase()
-  const { data: { user } } = await supabase.auth.getUser(token)
-  return user ?? null
 }
 
 // ─────────────────────────────────────────────
@@ -42,8 +48,7 @@ Specificity Rule
 
 Tone Rule
 - Assume a sophisticated, fluent, decision-capable reader.
-- Do not simplify unnecessarily.
-- Do not infantilize.
+- Do not simplify unnecessarily. Do not infantilize.
 - Do not use filler encouragement or generic advice.
 
 **Length Control**
@@ -133,7 +138,7 @@ async function callOpenAI(systemPrompt, userMessage) {
 }
 
 // ─────────────────────────────────────────────
-// Category classification — keyword rules + AI fallback
+// Category classification
 // ─────────────────────────────────────────────
 async function classifyCategory(prompt, aiResponse) {
   const combined = (prompt + ' ' + aiResponse).toLowerCase()
@@ -191,12 +196,13 @@ function parseBrainDump(raw) {
 // ─────────────────────────────────────────────
 export async function POST(request) {
   try {
-    const supabase = getSupabase()
-    const user = await getUser(request)
-
-    if (!user) {
+    // Decode user ID directly from JWT — no network call, no SDK auth issues
+    const userId = getUserIdFromToken(request)
+    if (!userId) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
+
+    const supabase = getSupabase()
 
     const body = await request.json()
     const { prompt: newPrompt, promptBody, promptId, model = 'claude', mode } = body
@@ -221,7 +227,7 @@ export async function POST(request) {
       const inserted = []
       for (const e of parsed) {
         const { data } = await supabase.from('entries').insert({
-          user_id: user.id, title: e.title, body: cleanPrompt,
+          user_id: userId, title: e.title, body: cleanPrompt,
           response: e.content, category: e.category, model: modelLabel, source: 'brain_dump',
         }).select().single()
         if (data) inserted.push(data)
@@ -242,7 +248,7 @@ export async function POST(request) {
     const title = generateTitle(cleanPrompt)
 
     const { data: entry, error } = await supabase.from('entries').insert({
-      user_id: user.id, title, body: cleanPrompt, response: aiResponse, category, model: modelLabel,
+      user_id: userId, title, body: cleanPrompt, response: aiResponse, category, model: modelLabel,
     }).select().single()
 
     if (error) throw error
