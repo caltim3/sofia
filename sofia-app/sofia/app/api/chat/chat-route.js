@@ -86,8 +86,9 @@ export async function POST(request) {
     const userId = await getUserId(request)
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-    const { entryId, message, model = 'claude' } = await request.json()
-    if (!entryId || !message?.trim()) {
+    const { entry_id, entryId, message, model = 'claude' } = await request.json()
+    const resolvedEntryId = entry_id || entryId
+    if (!resolvedEntryId || !message?.trim()) {
       return NextResponse.json({ error: 'entryId and message are required' }, { status: 400 })
     }
 
@@ -95,7 +96,7 @@ export async function POST(request) {
     const { data: entry } = await supabase
       .from('entries')
       .select('title, body, original_content, content, response, category')
-      .eq('id', entryId)
+      .eq('id', resolvedEntryId)
       .single()
 
     if (!entry) return NextResponse.json({ error: 'Entry not found' }, { status: 404 })
@@ -106,7 +107,7 @@ export async function POST(request) {
       const { data } = await supabase
         .from('messages')
         .select('role, content')
-        .eq('entry_id', entryId)
+        .eq('entry_id', resolvedEntryId)
         .order('created_at', { ascending: true })
       priorMessages = data || []
     } catch {}
@@ -130,24 +131,17 @@ export async function POST(request) {
     let saved = null
     try {
       await supabase.from('messages').insert({
-        user_id: userId, entry_id: entryId, role: 'user', content: message, model: modelLabel,
+        user_id: userId, entry_id: resolvedEntryId, role: 'user', content: message, model: modelLabel,
       })
       const { data } = await supabase.from('messages')
-        .insert({ user_id: userId, entry_id: entryId, role: 'assistant', content: aiResponse, model: modelLabel })
+        .insert({ user_id: userId, entry_id: resolvedEntryId, role: 'assistant', content: aiResponse, model: modelLabel })
         .select().single()
       saved = data
     } catch (e) {
       console.warn('Message save failed (non-fatal):', e.message)
     }
 
-    return NextResponse.json({
-      message: saved ?? {
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        content: aiResponse,
-        created_at: new Date().toISOString(),
-      }
-    })
+    return NextResponse.json({ response: aiResponse })
 
   } catch (err) {
     console.error('Chat error:', err)
