@@ -1,6 +1,5 @@
 // app/api/process/route.js
 // Sofia V2.1 — Template-aware entry processing
-// Replace your existing route.js with this version
 
 import { createClient } from '@supabase/supabase-js';
 
@@ -46,7 +45,6 @@ export async function POST(request) {
     // 2. Build the input text from either freeform content or structured template data
     let inputText = content || '';
     if (template_data && Object.keys(template_data).length > 0) {
-      // Append structured fields to give Claude full context
       inputText += '\n\n--- Structured Fields ---\n';
       for (const [key, value] of Object.entries(template_data)) {
         if (value) inputText += `${key}: ${value}\n`;
@@ -136,19 +134,16 @@ function buildSystemPrompt(template, templateType) {
   }
 }`;
 
-  // Add template-specific instructions
   if (template && template.ai_instructions) {
     prompt += `\n\nSPECIAL INSTRUCTIONS FOR THIS TEMPLATE TYPE (${template.name}):\n${template.ai_instructions}`;
   }
 
-  // Add todo-specific parsing
   if (templateType === 'todo') {
     prompt += `\n\nADDITIONAL: If the user mentions a timeframe, infer the due date relative to today (${new Date().toISOString().split('T')[0]}). Return these extra fields:
   "inferred_priority": "urgent|high|medium|low" (based on language urgency),
   "inferred_due_date": "YYYY-MM-DD or null"`;
   }
 
-  // Add deep thought devil's advocate
   if (templateType === 'deep-thought') {
     prompt += `\n\nADDITIONAL: Structure the summary as a devil's advocate analysis:
 1. **Strongest version of the argument** — steelman it
@@ -157,7 +152,6 @@ function buildSystemPrompt(template, templateType) {
 4. **What would resolve it** — data, experiment, or experience needed`;
   }
 
-  // Add shopping list parsing
   if (templateType === 'shopping-list') {
     prompt += `\n\nADDITIONAL: In the summary, organize items into sub-categories (groceries, music gear, books, household, etc.) with checkboxes. If an item spans multiple Sofia categories, note which category each sub-group maps to.`;
   }
@@ -168,6 +162,10 @@ function buildSystemPrompt(template, templateType) {
 }
 
 async function callClaude(systemPrompt, userMessage) {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    throw new Error('ANTHROPIC_API_KEY is not set in environment variables');
+  }
+
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -184,10 +182,19 @@ async function callClaude(systemPrompt, userMessage) {
   });
 
   const data = await response.json();
+
+  if (!response.ok || !data.content) {
+    throw new Error('Claude API error: ' + JSON.stringify(data));
+  }
+
   return data.content[0].text;
 }
 
 async function callGPT4o(systemPrompt, userMessage) {
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error('OPENAI_API_KEY is not set in environment variables');
+  }
+
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -205,5 +212,10 @@ async function callGPT4o(systemPrompt, userMessage) {
   });
 
   const data = await response.json();
+
+  if (!response.ok || !data.choices) {
+    throw new Error('OpenAI API error: ' + JSON.stringify(data));
+  }
+
   return data.choices[0].message.content;
 }
