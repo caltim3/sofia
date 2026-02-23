@@ -8,7 +8,9 @@ function getUserIdFromToken(request) {
     const token = authHeader.replace('Bearer ', '').trim()
     const payload = token.split('.')[1]
     if (!payload) return null
-    const decoded = JSON.parse(Buffer.from(payload, 'base64').toString('utf8'))
+    // base64url → base64
+    const base64 = payload.replace(/-/g, '+').replace(/_/g, '/')
+    const decoded = JSON.parse(Buffer.from(base64, 'base64').toString('utf8'))
     return decoded.sub ?? null
   } catch {
     return null
@@ -82,18 +84,12 @@ export async function POST(request) {
     }
 
     const { data: entry } = await supabase
-      .from('entries')
-      .select('title, body, response, category')
-      .eq('id', entryId)
-      .single()
+      .from('entries').select('title, body, response, category').eq('id', entryId).single()
 
     if (!entry) return NextResponse.json({ error: 'Entry not found' }, { status: 404 })
 
     const { data: priorMessages } = await supabase
-      .from('messages')
-      .select('role, content')
-      .eq('entry_id', entryId)
-      .order('created_at', { ascending: true })
+      .from('messages').select('role, content').eq('entry_id', entryId).order('created_at', { ascending: true })
 
     const conversationMessages = [
       { role: 'user', content: entry.body || entry.title },
@@ -114,8 +110,7 @@ export async function POST(request) {
     const { data: saved, error: saveError } = await supabase
       .from('messages')
       .insert({ user_id: userId, entry_id: entryId, role: 'assistant', content: aiResponse, model: modelLabel })
-      .select()
-      .single()
+      .select().single()
 
     if (saveError) {
       console.error('Message save error:', saveError)
