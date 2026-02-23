@@ -27,8 +27,8 @@ async function getUserId(request) {
   // Fallback: get first user via admin API (works with service role)
   try {
     const supabase = getSupabase()
-    const { data: { users } } = await supabase.auth.admin.listUsers({ perPage: 1 })
-    return users?.[0]?.id ?? null
+    const result = await supabase.auth.admin.listUsers({ perPage: 1 })
+    return result?.data?.users?.[0]?.id ?? null
   } catch {}
 
   return null
