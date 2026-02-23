@@ -1,19 +1,32 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 
-// Sofia chat system prompt — carries the reasoning engine into follow-up conversations
-const CHAT_SYSTEM_PROMPT = `You are SOFIA, a Second Brain strategic cognition layer, continuing a conversation about a specific entry.
+function getSupabase() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_ROLE_KEY
+  )
+}
 
-Your role in chat mode:
-- Answer follow-up questions with the same depth and specificity as the original response
-- Build on the entry's content — don't repeat what was already said
-- Apply domain expertise: if it's a music/jazz topic, use correct theory terminology; if it's a business topic, apply strategic rigor
-- Be direct and decision-useful
-- Do not use filler, generic advice, or unnecessary hedging
-- Format with Markdown when structure helps clarity
-- Keep responses under 600 words unless the question demands more`
+async function getUser(request) {
+  const authHeader = request.headers.get('authorization')
+  if (!authHeader) return null
+  const token = authHeader.replace('Bearer ', '').trim()
+  const supabase = getSupabase()
+  const { data: { user } } = await supabase.auth.getUser(token)
+  return user ?? null
+}
 
-// ── Model callers ──────────────────────────────────────────────
+const CHAT_SYSTEM_PROMPT = `You are SOFIA, a Second Brain strategic cognition layer, in follow-up chat mode.
+
+Your role:
+- Answer follow-up questions with the same depth as the original response
+- Build on the entry — don't repeat what was already said
+- Apply domain expertise: music/jazz = correct theory terminology; business = strategic rigor
+- Be direct and decision-useful. No filler.
+- Format with Markdown when structure helps
+- Under 600 words unless the question demands more`
+
 async function callAnthropic(messages, system) {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -29,10 +42,7 @@ async function callAnthropic(messages, system) {
       messages,
     }),
   })
-  if (!res.ok) {
-    const err = await res.text()
-    throw new Error(`Anthropic error ${res.status}: ${err}`)
-  }
+  if (!res.ok) throw new Error(`Anthropic error ${res.status}: ${await res.text()}`)
   const data = await res.json()
   return data.content?.map(b => b.text || '').join('') || ''
 }
@@ -42,131 +52,88 @@ async function callOpenAI(messages, system) {
   if (!apiKey) throw new Error('OpenAI API key not configured')
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
     body: JSON.stringify({
       model: 'gpt-4o',
       max_tokens: 2000,
       messages: [{ role: 'system', content: system }, ...messages],
     }),
   })
-  if (!res.ok) {
-    const err = await res.text()
-    throw new Error(`OpenAI error ${res.status}: ${err}`)
-  }
+  if (!res.ok) throw new Error(`OpenAI error ${res.status}: ${await res.text()}`)
   const data = await res.json()
   return data.choices?.[0]?.message?.content || ''
 }
 
-// ── Main handler ───────────────────────────────────────────────
 export async function POST(request) {
   try {
-    const authHeader = request.headers.get('authorization')
-    if (!authHeader) {
-      return NextResponse.json({ error: 'Unauthorized — no auth header' }, { status: 401 })
+    const supabase = getSupabase()
+    const user = await getUser(request)
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
-      { global: { headers: { Authorization: authHeader } } }
-    )
-
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return NextResponse.json({ error: 'Unauthorized — invalid session' }, { status: 401 })
-    }
-
-    const body = await request.json()
-    const { entryId, message, model = 'claude' } = body
+    const { entryId, message, model = 'claude' } = await request.json()
 
     if (!entryId || !message?.trim()) {
       return NextResponse.json({ error: 'entryId and message are required' }, { status: 400 })
     }
 
-    // ── Fetch the parent entry for context ──
-    const { data: entry, error: entryError } = await supabase
+    // Fetch parent entry for context
+    const { data: entry } = await supabase
       .from('entries')
       .select('title, body, response, category')
       .eq('id', entryId)
       .single()
 
-    if (entryError || !entry) {
-      return NextResponse.json({ error: 'Entry not found' }, { status: 404 })
-    }
+    if (!entry) return NextResponse.json({ error: 'Entry not found' }, { status: 404 })
 
-    // ── Load prior messages for this entry ──
+    // Load prior messages
     const { data: priorMessages } = await supabase
       .from('messages')
       .select('role, content')
       .eq('entry_id', entryId)
       .order('created_at', { ascending: true })
 
-    // ── Build conversation: seed with original entry Q&A, then history ──
     const conversationMessages = [
-      // Seed: the original prompt and Sofia's response
       { role: 'user', content: entry.body || entry.title },
       { role: 'assistant', content: entry.response || 'I have analyzed this entry.' },
-      // Prior chat history
       ...(priorMessages || []).map(m => ({ role: m.role, content: m.content })),
-      // New message
       { role: 'user', content: message },
     ]
 
-    // Build system prompt with entry context
-    const system = `${CHAT_SYSTEM_PROMPT}
-
-Entry context:
-- Title: "${entry.title}"
-- Category: ${entry.category}
-- This is a follow-up conversation about the entry above.`
-
-    // ── Call AI ──
+    const system = `${CHAT_SYSTEM_PROMPT}\n\nEntry: "${entry.title}" (${entry.category})`
     const caller = model === 'gpt4' ? callOpenAI : callAnthropic
     const aiResponse = await caller(conversationMessages, system)
+    const modelLabel = model === 'gpt4' ? 'gpt-4o' : 'claude-sonnet-4'
 
-    // ── Save user message ──
+    // Save user message
     await supabase.from('messages').insert({
-      user_id: user.id,
-      entry_id: entryId,
-      role: 'user',
-      content: message,
-      model: model === 'gpt4' ? 'gpt-4o' : 'claude-sonnet-4',
+      user_id: user.id, entry_id: entryId, role: 'user', content: message, model: modelLabel,
     })
 
-    // ── Save assistant message and return it ──
+    // Save + return assistant message
     const { data: saved, error: saveError } = await supabase
       .from('messages')
       .insert({
-        user_id: user.id,
-        entry_id: entryId,
-        role: 'assistant',
-        content: aiResponse,
-        model: model === 'gpt4' ? 'gpt-4o' : 'claude-sonnet-4',
+        user_id: user.id, entry_id: entryId, role: 'assistant', content: aiResponse, model: modelLabel,
       })
       .select()
       .single()
 
     if (saveError) {
-      // Still return the response even if save fails — user sees the answer
+      // Return response even if save fails
       console.error('Message save error:', saveError)
       return NextResponse.json({
-        message: {
-          id: crypto.randomUUID(),
-          role: 'assistant',
-          content: aiResponse,
-          created_at: new Date().toISOString(),
-        },
-        warning: 'Response generated but could not be saved. Check that the messages table exists in Supabase.',
+        message: { id: crypto.randomUUID(), role: 'assistant', content: aiResponse, created_at: new Date().toISOString() },
+        warning: 'Response generated but not saved — check messages table exists in Supabase',
       })
     }
 
     return NextResponse.json({ message: saved })
 
   } catch (err) {
-    console.error('Chat route error:', err)
+    console.error('Chat error:', err)
     return NextResponse.json({ error: err.message }, { status: 500 })
   }
 }
