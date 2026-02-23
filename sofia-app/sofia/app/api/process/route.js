@@ -2,8 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 
 // ─────────────────────────────────────────────
-// Auth — decode JWT payload directly (no network call needed)
-// Supabase JWTs are standard JWTs, payload is just base64
+// Auth — decode JWT using base64URL (JWTs use - and _ not + and /)
 // ─────────────────────────────────────────────
 function getUserIdFromToken(request) {
   try {
@@ -12,8 +11,10 @@ function getUserIdFromToken(request) {
     const token = authHeader.replace('Bearer ', '').trim()
     const payload = token.split('.')[1]
     if (!payload) return null
-    const decoded = JSON.parse(Buffer.from(payload, 'base64').toString('utf8'))
-    return decoded.sub ?? null  // 'sub' is the user UUID in Supabase JWTs
+    // base64url → base64: replace - with + and _ with /
+    const base64 = payload.replace(/-/g, '+').replace(/_/g, '/')
+    const decoded = JSON.parse(Buffer.from(base64, 'base64').toString('utf8'))
+    return decoded.sub ?? null
   } catch {
     return null
   }
@@ -82,9 +83,6 @@ Do not force frameworks onto descriptive topics. Do not omit sub-questions. Do n
 // ─────────────────────────────────────────────
 const VALID_CATEGORIES = ['work', 'music', 'personal', 'ideas', 'books', 'shopping', 'todos', 'travel/food']
 
-// ─────────────────────────────────────────────
-// Brain dump prompt
-// ─────────────────────────────────────────────
 const BRAINDUMP_PROMPT = `You are Sofia processing a brain dump. Parse it into SEPARATE distinct thoughts. For EACH, output:
 
 ---ENTRY---
@@ -162,9 +160,6 @@ async function classifyCategory(prompt, aiResponse) {
   }
 }
 
-// ─────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────
 function generateTitle(prompt) {
   const cleaned = prompt.replace(/^#(dump|short|challenge)\s*/i, '').trim()
   return cleaned.length <= 60 ? cleaned : cleaned.slice(0, 57) + '...'
@@ -196,14 +191,12 @@ function parseBrainDump(raw) {
 // ─────────────────────────────────────────────
 export async function POST(request) {
   try {
-    // Decode user ID directly from JWT — no network call, no SDK auth issues
     const userId = getUserIdFromToken(request)
     if (!userId) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
     const supabase = getSupabase()
-
     const body = await request.json()
     const { prompt: newPrompt, promptBody, promptId, model = 'claude', mode } = body
     const prompt = newPrompt || promptBody
@@ -217,7 +210,6 @@ export async function POST(request) {
     const caller = model === 'gpt4' ? callOpenAI : callAnthropic
     const modelLabel = model === 'gpt4' ? 'gpt-4o' : 'claude-sonnet-4'
 
-    // ── Brain Dump ──
     if (isBrainDump) {
       const cleanPrompt = prompt.replace(/^#dump\s*/i, '').trim()
       const raw = await caller(BRAINDUMP_PROMPT, cleanPrompt)
@@ -237,7 +229,6 @@ export async function POST(request) {
       return NextResponse.json({ entries: inserted, type: 'brain_dump' })
     }
 
-    // ── Standard + Challenge ──
     const systemPrompt = isChallenge
       ? SOFIA_SYSTEM_PROMPT + '\n\nChallenge mode: steelman the opposite view rigorously. Find genuine weaknesses. Do not be a pushover.'
       : SOFIA_SYSTEM_PROMPT
