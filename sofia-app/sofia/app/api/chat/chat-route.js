@@ -1,22 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 
-function getUserIdFromToken(request) {
-  try {
-    const authHeader = request.headers.get('authorization')
-    if (!authHeader) return null
-    const token = authHeader.replace('Bearer ', '').trim()
-    const payload = token.split('.')[1]
-    if (!payload) return null
-    // base64url → base64
-    const base64 = payload.replace(/-/g, '+').replace(/_/g, '/')
-    const decoded = JSON.parse(Buffer.from(base64, 'base64').toString('utf8'))
-    return decoded.sub ?? null
-  } catch {
-    return null
-  }
-}
-
 function getSupabase() {
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -24,12 +8,37 @@ function getSupabase() {
   )
 }
 
+// Same auth pattern that works in process route
+async function getUserId(request) {
+  // Try JWT decode first
+  try {
+    const authHeader = request.headers.get('authorization')
+    if (authHeader) {
+      const token = authHeader.replace('Bearer ', '').trim()
+      const payload = token.split('.')[1]
+      if (payload) {
+        const base64 = payload.replace(/-/g, '+').replace(/_/g, '/')
+        const decoded = JSON.parse(Buffer.from(base64, 'base64').toString('utf8'))
+        if (decoded.sub) return decoded.sub
+      }
+    }
+  } catch {}
+
+  // Fallback: get first user via admin API (works with service role)
+  try {
+    const supabase = getSupabase()
+    const { data: { users } } = await supabase.auth.admin.listUsers({ perPage: 1 })
+    return users?.[0]?.id ?? null
+  } catch {}
+
+  return null
+}
+
 const CHAT_SYSTEM_PROMPT = `You are SOFIA, a Second Brain strategic cognition layer, in follow-up chat mode.
 
-Your role:
 - Answer follow-up questions with the same depth as the original response
 - Build on the entry — don't repeat what was already said
-- Apply domain expertise: music/jazz = correct theory terminology; business = strategic rigor
+- Music/jazz topics: use correct theory terminology; business topics: apply strategic rigor
 - Be direct and decision-useful. No filler.
 - Format with Markdown when structure helps
 - Under 600 words unless the question demands more`
@@ -73,34 +82,42 @@ async function callOpenAI(messages, system) {
 
 export async function POST(request) {
   try {
-    let userId = getUserIdFromToken(request)
-    // Fallback: get first auth user (single-user app)
-    if (!userId) {
-      const supabaseAdmin = getSupabase()
-      const { data: { users } } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1 })
-      userId = users?.[0]?.id ?? null
-    }
+    const supabase = getSupabase()
+    const userId = await getUserId(request)
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-    const supabase = getSupabase()
     const { entryId, message, model = 'claude' } = await request.json()
-
     if (!entryId || !message?.trim()) {
       return NextResponse.json({ error: 'entryId and message are required' }, { status: 400 })
     }
 
+    // Fetch parent entry
     const { data: entry } = await supabase
-      .from('entries').select('title, original_content, body, content, response, category').eq('id', entryId).single()
+      .from('entries')
+      .select('title, body, original_content, content, response, category')
+      .eq('id', entryId)
+      .single()
 
     if (!entry) return NextResponse.json({ error: 'Entry not found' }, { status: 404 })
 
-    const { data: priorMessages } = await supabase
-      .from('messages').select('role, content').eq('entry_id', entryId).order('created_at', { ascending: true })
+    // Load prior messages — non-blocking, empty array if table missing
+    let priorMessages = []
+    try {
+      const { data } = await supabase
+        .from('messages')
+        .select('role, content')
+        .eq('entry_id', entryId)
+        .order('created_at', { ascending: true })
+      priorMessages = data || []
+    } catch {}
+
+    const originalPrompt = entry.body || entry.original_content || entry.title
+    const originalResponse = entry.response || entry.content || 'I have analyzed this entry.'
 
     const conversationMessages = [
-      { role: 'user', content: entry.body || entry.original_content || entry.title },
-      { role: 'assistant', content: entry.response || entry.content || 'I have analyzed this entry.' },
-      ...(priorMessages || []).map(m => ({ role: m.role, content: m.content })),
+      { role: 'user', content: originalPrompt },
+      { role: 'assistant', content: originalResponse },
+      ...priorMessages.map(m => ({ role: m.role, content: m.content })),
       { role: 'user', content: message },
     ]
 
@@ -109,23 +126,28 @@ export async function POST(request) {
     const aiResponse = await caller(conversationMessages, system)
     const modelLabel = model === 'gpt4' ? 'gpt-4o' : 'claude-sonnet-4'
 
-    await supabase.from('messages').insert({
-      user_id: userId, entry_id: entryId, role: 'user', content: message, model: modelLabel,
-    })
-
-    const { data: saved, error: saveError } = await supabase
-      .from('messages')
-      .insert({ user_id: userId, entry_id: entryId, role: 'assistant', content: aiResponse, model: modelLabel })
-      .select().single()
-
-    if (saveError) {
-      console.error('Message save error:', saveError)
-      return NextResponse.json({
-        message: { id: crypto.randomUUID(), role: 'assistant', content: aiResponse, created_at: new Date().toISOString() },
+    // Save messages — non-blocking, don't fail the request if table missing
+    let saved = null
+    try {
+      await supabase.from('messages').insert({
+        user_id: userId, entry_id: entryId, role: 'user', content: message, model: modelLabel,
       })
+      const { data } = await supabase.from('messages')
+        .insert({ user_id: userId, entry_id: entryId, role: 'assistant', content: aiResponse, model: modelLabel })
+        .select().single()
+      saved = data
+    } catch (e) {
+      console.warn('Message save failed (non-fatal):', e.message)
     }
 
-    return NextResponse.json({ message: saved })
+    return NextResponse.json({
+      message: saved ?? {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: aiResponse,
+        created_at: new Date().toISOString(),
+      }
+    })
 
   } catch (err) {
     console.error('Chat error:', err)
