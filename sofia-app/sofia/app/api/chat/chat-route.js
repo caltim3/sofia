@@ -1,20 +1,25 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 
+function getUserIdFromToken(request) {
+  try {
+    const authHeader = request.headers.get('authorization')
+    if (!authHeader) return null
+    const token = authHeader.replace('Bearer ', '').trim()
+    const payload = token.split('.')[1]
+    if (!payload) return null
+    const decoded = JSON.parse(Buffer.from(payload, 'base64').toString('utf8'))
+    return decoded.sub ?? null
+  } catch {
+    return null
+  }
+}
+
 function getSupabase() {
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL,
     process.env.SUPABASE_SERVICE_ROLE_KEY
   )
-}
-
-async function getUser(request) {
-  const authHeader = request.headers.get('authorization')
-  if (!authHeader) return null
-  const token = authHeader.replace('Bearer ', '').trim()
-  const supabase = getSupabase()
-  const { data: { user } } = await supabase.auth.getUser(token)
-  return user ?? null
 }
 
 const CHAT_SYSTEM_PROMPT = `You are SOFIA, a Second Brain strategic cognition layer, in follow-up chat mode.
@@ -66,20 +71,16 @@ async function callOpenAI(messages, system) {
 
 export async function POST(request) {
   try {
+    const userId = getUserIdFromToken(request)
+    if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
     const supabase = getSupabase()
-    const user = await getUser(request)
-
-    if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
-
     const { entryId, message, model = 'claude' } = await request.json()
 
     if (!entryId || !message?.trim()) {
       return NextResponse.json({ error: 'entryId and message are required' }, { status: 400 })
     }
 
-    // Fetch parent entry for context
     const { data: entry } = await supabase
       .from('entries')
       .select('title, body, response, category')
@@ -88,7 +89,6 @@ export async function POST(request) {
 
     if (!entry) return NextResponse.json({ error: 'Entry not found' }, { status: 404 })
 
-    // Load prior messages
     const { data: priorMessages } = await supabase
       .from('messages')
       .select('role, content')
@@ -107,26 +107,20 @@ export async function POST(request) {
     const aiResponse = await caller(conversationMessages, system)
     const modelLabel = model === 'gpt4' ? 'gpt-4o' : 'claude-sonnet-4'
 
-    // Save user message
     await supabase.from('messages').insert({
-      user_id: user.id, entry_id: entryId, role: 'user', content: message, model: modelLabel,
+      user_id: userId, entry_id: entryId, role: 'user', content: message, model: modelLabel,
     })
 
-    // Save + return assistant message
     const { data: saved, error: saveError } = await supabase
       .from('messages')
-      .insert({
-        user_id: user.id, entry_id: entryId, role: 'assistant', content: aiResponse, model: modelLabel,
-      })
+      .insert({ user_id: userId, entry_id: entryId, role: 'assistant', content: aiResponse, model: modelLabel })
       .select()
       .single()
 
     if (saveError) {
-      // Return response even if save fails
       console.error('Message save error:', saveError)
       return NextResponse.json({
         message: { id: crypto.randomUUID(), role: 'assistant', content: aiResponse, created_at: new Date().toISOString() },
-        warning: 'Response generated but not saved — check messages table exists in Supabase',
       })
     }
 
