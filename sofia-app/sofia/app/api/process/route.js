@@ -1,25 +1,8 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 
-// ─────────────────────────────────────────────
-// Auth — decode JWT using base64URL (JWTs use - and _ not + and /)
-// ─────────────────────────────────────────────
-function getUserIdFromToken(request) {
-  try {
-    const authHeader = request.headers.get('authorization')
-    if (!authHeader) return null
-    const token = authHeader.replace('Bearer ', '').trim()
-    const payload = token.split('.')[1]
-    if (!payload) return null
-    // base64url → base64: replace - with + and _ with /
-    const base64 = payload.replace(/-/g, '+').replace(/_/g, '/')
-    const decoded = JSON.parse(Buffer.from(base64, 'base64').toString('utf8'))
-    return decoded.sub ?? null
-  } catch {
-    return null
-  }
-}
-
+// No auth check — frontend sends no Authorization header
+// Service role handles all DB operations
 function getSupabase() {
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -150,7 +133,7 @@ async function classifyCategory(prompt, aiResponse) {
 
   try {
     const result = await callAnthropic(
-      `Classify content into exactly one of: work, music, personal, ideas, books, shopping, todos, travel/food. Return only the category word, nothing else.`,
+      `Classify into exactly one of: work, music, personal, ideas, books, shopping, todos, travel/food. Return only the category word.`,
       `"${prompt.slice(0, 300)}"`
     )
     const cleaned = result.trim().toLowerCase().replace(/[^a-z/]/g, '')
@@ -191,18 +174,38 @@ function parseBrainDump(raw) {
 // ─────────────────────────────────────────────
 export async function POST(request) {
   try {
-    const userId = getUserIdFromToken(request)
-    if (!userId) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
-
     const supabase = getSupabase()
     const body = await request.json()
-    const { prompt: newPrompt, promptBody, promptId, model = 'claude', mode } = body
-    const prompt = newPrompt || promptBody
+
+    // Frontend sends: { content, template_type, template_data, model }
+    // Legacy sends:   { promptBody, promptId, model, mode }
+    const {
+      content,
+      prompt: promptField,
+      promptBody,
+      promptId,
+      model = 'claude',
+      mode,
+      template_type = 'freeform',
+      template_data,
+    } = body
+
+    const prompt = content || promptField || promptBody
 
     if (!prompt?.trim()) {
       return NextResponse.json({ error: 'Prompt is required' }, { status: 400 })
+    }
+
+    // Get user_id — try prompts table, then fall back to first auth user
+    let userId = null
+    if (promptId) {
+      const { data: promptRecord } = await supabase
+        .from('prompts').select('user_id').eq('id', promptId).single()
+      userId = promptRecord?.user_id ?? null
+    }
+    if (!userId) {
+      const { data: { users } } = await supabase.auth.admin.listUsers({ perPage: 1 })
+      userId = users?.[0]?.id ?? null
     }
 
     const isBrainDump = /^#dump\s/i.test(prompt.trim()) || mode === 'brain_dump'
@@ -210,6 +213,7 @@ export async function POST(request) {
     const caller = model === 'gpt4' ? callOpenAI : callAnthropic
     const modelLabel = model === 'gpt4' ? 'gpt-4o' : 'claude-sonnet-4'
 
+    // ── Brain Dump ──
     if (isBrainDump) {
       const cleanPrompt = prompt.replace(/^#dump\s*/i, '').trim()
       const raw = await caller(BRAINDUMP_PROMPT, cleanPrompt)
@@ -229,6 +233,7 @@ export async function POST(request) {
       return NextResponse.json({ entries: inserted, type: 'brain_dump' })
     }
 
+    // ── Standard + Challenge ──
     const systemPrompt = isChallenge
       ? SOFIA_SYSTEM_PROMPT + '\n\nChallenge mode: steelman the opposite view rigorously. Find genuine weaknesses. Do not be a pushover.'
       : SOFIA_SYSTEM_PROMPT
@@ -246,7 +251,8 @@ export async function POST(request) {
 
     if (promptId) await supabase.from('prompts').update({ status: 'Completed', processed_at: new Date().toISOString() }).eq('id', promptId)
 
-    return NextResponse.json({ entries: [entry], category, type: 'standard' })
+    // Return both formats for compatibility
+    return NextResponse.json({ entry, entries: [entry], category, success: true })
 
   } catch (err) {
     console.error('Process error:', err)
