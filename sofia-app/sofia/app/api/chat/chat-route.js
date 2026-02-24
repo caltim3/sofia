@@ -1,49 +1,15 @@
-import { NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
+// app/api/chat/route.js
+// Sofia V2.2 — Fixed chat mode with entry context
 
-function getSupabase() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL,
-    process.env.SUPABASE_SERVICE_ROLE_KEY
-  )
-}
+import { NextResponse } from 'next/server';
 
-// Same auth pattern that works in process route
-async function getUserId(request) {
-  // Try JWT decode first
-  try {
-    const authHeader = request.headers.get('authorization')
-    if (authHeader) {
-      const token = authHeader.replace('Bearer ', '').trim()
-      const payload = token.split('.')[1]
-      if (payload) {
-        const base64 = payload.replace(/-/g, '+').replace(/_/g, '/')
-        const decoded = JSON.parse(Buffer.from(base64, 'base64').toString('utf8'))
-        if (decoded.sub) return decoded.sub
-      }
-    }
-  } catch {}
+const CHAT_SYSTEM_PROMPT = `You are Sofia, an AI assistant engaged in a follow-up conversation about a specific entry in Timo's knowledge base. 
 
-  // Fallback: get first user via admin API (works with service role)
-  try {
-    const supabase = getSupabase()
-    const result = await supabase.auth.admin.listUsers({ perPage: 1 })
-    return result?.data?.users?.[0]?.id ?? null
-  } catch {}
+Context about Timo: CEO of DevEngine (sustainable infrastructure, solar/BESS development), jazz guitarist (bebop, Barry Harris methods), lives in Ghent NY, leads a Brooklyn book club.
 
-  return null
-}
+You have access to the entry details below. Use them to provide contextual, insightful follow-up responses. Be concise but substantive — this is a chat, not an essay. If asked about the entry's topic, draw on your knowledge to go deeper than the original entry.`;
 
-const CHAT_SYSTEM_PROMPT = `You are SOFIA, a Second Brain strategic cognition layer, in follow-up chat mode.
-
-- Answer follow-up questions with the same depth as the original response
-- Build on the entry — don't repeat what was already said
-- Music/jazz topics: use correct theory terminology; business topics: apply strategic rigor
-- Be direct and decision-useful. No filler.
-- Format with Markdown when structure helps
-- Under 600 words unless the question demands more`
-
-async function callAnthropic(messages, system) {
+async function callClaude(messages) {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -53,98 +19,110 @@ async function callAnthropic(messages, system) {
     },
     body: JSON.stringify({
       model: 'claude-sonnet-4-20250514',
-      max_tokens: 2000,
-      system,
-      messages,
+      max_tokens: 1000,
+      system: CHAT_SYSTEM_PROMPT,
+      messages: messages,
     }),
-  })
-  if (!res.ok) throw new Error(`Anthropic error ${res.status}: ${await res.text()}`)
-  const data = await res.json()
-  return data.content?.map(b => b.text || '').join('') || ''
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Claude API error: ${res.status} - ${err}`);
+  }
+
+  const data = await res.json();
+  return data.content[0].text;
 }
 
-async function callOpenAI(messages, system) {
-  const apiKey = process.env.OPENAI_API_KEY
-  if (!apiKey) throw new Error('OpenAI API key not configured')
+async function callGPT4o(messages) {
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error('OpenAI API key not configured');
+  }
+
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+    },
     body: JSON.stringify({
       model: 'gpt-4o',
-      max_tokens: 2000,
-      messages: [{ role: 'system', content: system }, ...messages],
+      max_tokens: 1000,
+      messages: [
+        { role: 'system', content: CHAT_SYSTEM_PROMPT },
+        ...messages,
+      ],
     }),
-  })
-  if (!res.ok) throw new Error(`OpenAI error ${res.status}: ${await res.text()}`)
-  const data = await res.json()
-  return data.choices?.[0]?.message?.content || ''
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`GPT-4o API error: ${res.status} - ${err}`);
+  }
+
+  const data = await res.json();
+  return data.choices[0].message.content;
 }
 
 export async function POST(request) {
   try {
-    const supabase = getSupabase()
-    const userId = await getUserId(request)
-    if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    const body = await request.json();
+    const { message, history = [], context = {}, model = 'claude' } = body;
 
-    const { entry_id, entryId, message, model = 'claude' } = await request.json()
-    const resolvedEntryId = entry_id || entryId
-    if (!resolvedEntryId || !message?.trim()) {
-      return NextResponse.json({ error: 'entryId and message are required' }, { status: 400 })
+    if (!message) {
+      return NextResponse.json({ error: 'Message required' }, { status: 400 });
     }
 
-    // Fetch parent entry
-    const { data: entry } = await supabase
-      .from('entries')
-      .select('title, body, original_content, content, response, category')
-      .eq('id', resolvedEntryId)
-      .single()
+    // Build the conversation with entry context
+    const entryContext = `--- Entry Being Discussed ---
+Title: ${context.title || 'Unknown'}
+Category: ${context.category || 'Unknown'}
+Summary: ${context.summary || 'No summary'}
+Original Input: ${context.raw_content || 'No original content'}
+---`;
 
-    if (!entry) return NextResponse.json({ error: 'Entry not found' }, { status: 404 })
+    // Build messages array
+    const messages = [];
 
-    // Load prior messages — non-blocking, empty array if table missing
-    let priorMessages = []
-    try {
-      const { data } = await supabase
-        .from('messages')
-        .select('role, content')
-        .eq('entry_id', resolvedEntryId)
-        .order('created_at', { ascending: true })
-      priorMessages = data || []
-    } catch {}
+    // First message includes the entry context
+    if (history.length === 0) {
+      messages.push({
+        role: 'user',
+        content: `${entryContext}\n\nMy question: ${message}`,
+      });
+    } else {
+      // Include entry context in first message, then history
+      messages.push({
+        role: 'user',
+        content: `${entryContext}\n\nMy question: ${history[0].content}`,
+      });
 
-    const originalPrompt = entry.body || entry.original_content || entry.title
-    const originalResponse = entry.response || entry.content || 'I have analyzed this entry.'
+      // Add remaining history
+      for (let i = 1; i < history.length; i++) {
+        messages.push({
+          role: history[i].role,
+          content: history[i].content,
+        });
+      }
 
-    const conversationMessages = [
-      { role: 'user', content: originalPrompt },
-      { role: 'assistant', content: originalResponse },
-      ...priorMessages.map(m => ({ role: m.role, content: m.content })),
-      { role: 'user', content: message },
-    ]
-
-    const system = `${CHAT_SYSTEM_PROMPT}\n\nEntry: "${entry.title}" (${entry.category})`
-    const caller = model === 'gpt4' ? callOpenAI : callAnthropic
-    const aiResponse = await caller(conversationMessages, system)
-    const modelLabel = model === 'gpt4' ? 'gpt-4o' : 'claude-sonnet-4'
-
-    // Save messages — non-blocking, don't fail the request if table missing
-    let saved = null
-    try {
-      await supabase.from('messages').insert({
-        user_id: userId, entry_id: resolvedEntryId, role: 'user', content: message, model: modelLabel,
-      })
-      const { data } = await supabase.from('messages')
-        .insert({ user_id: userId, entry_id: resolvedEntryId, role: 'assistant', content: aiResponse, model: modelLabel })
-        .select().single()
-      saved = data
-    } catch (e) {
-      console.warn('Message save failed (non-fatal):', e.message)
+      // Add current message
+      messages.push({
+        role: 'user',
+        content: message,
+      });
     }
 
-    return NextResponse.json({ response: aiResponse })
+    let response;
+    if (model === 'gpt4o') {
+      response = await callGPT4o(messages);
+    } else {
+      response = await callClaude(messages);
+    }
+
+    return NextResponse.json({ response });
 
   } catch (err) {
-    console.error('Chat error:', err)
-    return NextResponse.json({ error: err.message }, { status: 500 })
+    console.error('Chat error:', err);
+    return NextResponse.json({ error: 'Chat failed: ' + err.message }, { status: 500 });
   }
 }
