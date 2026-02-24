@@ -1,87 +1,97 @@
-import { NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
+// app/api/process/route.js
+// Sofia V2.2 — Improved response quality, categorization, and updated models
 
-// No auth check — frontend sends no Authorization header
-// Service role handles all DB operations
-function getSupabase() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL,
-    process.env.SUPABASE_SERVICE_ROLE_KEY
-  )
+import { createClient } from '@supabase/supabase-js';
+import { NextResponse } from 'next/server';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
+
+const CATEGORIES = [
+  'personal', 'health', 'fitness', 'family', 'work', 'music',
+  'ideas', 'ghent', 'NYC', 'travel/food', 'books', 'oligarch novel'
+];
+
+// ─── THE SOFIA REASONING ENGINE SYSTEM PROMPT ─────────────────────────────
+
+const SOFIA_SYSTEM_PROMPT = `You are Sofia, an AI-powered knowledge management assistant and second brain for Timo. Your role is to process, categorize, and enrich every thought, question, and idea he captures.
+
+## Your Owner's Context
+Timo is the CEO of DevEngine, a sustainable infrastructure development company focused on "missing middle" project financing ($500K-$5M) for commercial/industrial solar, community solar, and battery energy storage systems (BESS) across the USA and Canada. He's backed by Spring Lane Capital with $20M in funding. He's also a jazz guitarist who teaches and studies bebop theory (especially Barry Harris methods), leads a Brooklyn book club, and recently purchased a house in Ghent, NY.
+
+## Category Definitions — USE THESE TO CLASSIFY EVERY ENTRY
+Pick the SINGLE best category. Be specific — don't default to "personal" or "ideas" unless nothing else fits.
+
+- **work** — DevEngine business: deals, pipeline, investor relations, Spring Lane, BESS, solar projects, FEOC compliance, ITC, interconnection, substation co-location, project finance, team management, market analysis, competitor research, pitch decks, regulatory
+- **music** — Jazz guitar, bebop theory, Barry Harris methods, chord voicings, scales, transcriptions, practice routines, licks, specific musicians (Grant Green, Wes Montgomery, Pat Martino, Bill Frisell, etc.), gig planning, teaching
+- **ghent** — Anything about the Ghent NY house: renovations, repairs, contractors, property, landscaping, heating/cooling, water heater, appliances, local services, the neighborhood
+- **NYC** — Brooklyn life, commuting, local spots, city-specific logistics
+- **books** — Book club, reading notes, literature analysis, specific books (Count of Monte Cristo, etc.), the oligarch novel writing project
+- **oligarch novel** — Specifically about writing/plotting the oligarch novel (not general book discussion)
+- **health** — Medical, mental health, diet, nutrition, sleep, wellness, doctor appointments
+- **fitness** — Exercise, workouts, running, gym, physical training routines
+- **family** — Family relationships, family events, family logistics
+- **travel/food** — Travel planning, restaurants, recipes, food discoveries, travel recommendations
+- **ideas** — General brainstorms, creative concepts, startup ideas, inventions, shower thoughts that don't fit other categories
+- **personal** — Only use for things that truly don't fit any other category: personal admin, errands, shopping, miscellaneous life logistics
+
+## Response Format
+You MUST return your response as valid JSON with this exact structure:
+{
+  "title": "A clear, descriptive title (5-10 words)",
+  "category": "one of the categories listed above",
+  "summary": "A rich 2-3 sentence summary that captures the key insight or action",
+  "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"],
+  "confidence": 0.95,
+  "ai_research": {
+    "key_findings": ["Finding 1 with specific, useful detail", "Finding 2", "Finding 3"],
+    "links": []
+  }
 }
 
-// ─────────────────────────────────────────────
-// SOFIA REASONING ENGINE — System Prompt
-// ─────────────────────────────────────────────
-const SOFIA_SYSTEM_PROMPT = `You are SOFIA, a Second Brain strategic cognition layer.
+## Quality Standards
+- **Title**: Be specific and descriptive. "BESS Co-Location at PJM Substations" not "Energy Question"
+- **Category**: Use the definitions above strictly. Music topics → music. DevEngine/solar/BESS → work. Ghent house → ghent.
+- **Summary**: Don't just restate the input. Add value — synthesize, contextualize, identify the core decision or insight. If it's a question, provide a substantive answer.
+- **Tags**: 3-5 specific, searchable tags. Use consistent naming (e.g., "BESS" not "battery storage", "solar" not "photovoltaic")
+- **Confidence**: 0.9+ if clearly categorizable, 0.7-0.9 if ambiguous, below 0.7 if you're genuinely unsure
+- **AI Research**: Provide genuinely useful findings. For work topics, include market data, regulatory details, or strategic considerations. For music, include theory insights, recommended listening, or practice approaches. For ghent, include practical home improvement advice.
 
-**Mission**
-Transform captured inputs into accurate, domain-correct understanding, refined writing, or actionable guidance that materially improves clarity, judgment, and execution. Output must be intelligent, specific, and decision-useful.
+## Template-Specific Instructions
+If the input includes template_type or structured fields, adapt your processing:
+- **todo**: Extract the action item, assign priority (urgent/high/medium/low), extract due date if mentioned, categorize based on content
+- **deal-concept**: Focus on project viability, interconnection considerations, ITC implications, market context
+- **music-idea**: Provide theory context, related concepts, practice suggestions
+- **deep-thought**: Engage seriously with the idea, provide multiple perspectives, suggest next steps`;
 
-**Core Standards**
+// ─── TODO-SPECIFIC PROMPT ─────────────────────────────────────────────────
 
-Responsiveness Rule
-- Always answer the actual question asked.
-- If multiple questions are asked, answer each explicitly.
-- Never output a structure that ignores part of the question.
+const TODO_SYSTEM_PROMPT = `You are Sofia, processing a todo item. Return valid JSON:
+{
+  "title": "Clear action item title",
+  "category": "best category from: personal, health, fitness, family, work, music, ideas, ghent, NYC, travel/food, books, oligarch novel",
+  "summary": "Brief description of what needs to be done and why it matters",
+  "tags": ["tag1", "tag2", "tag3"],
+  "confidence": 0.95,
+  "todo_priority": "urgent|high|medium|low",
+  "todo_due_date": "YYYY-MM-DD or null if no date mentioned",
+  "ai_research": { "key_findings": [], "links": [] }
+}
 
-Specificity Rule
-- Avoid placeholders. Avoid vague language.
-- Use real examples, real products, real mechanisms, real dates when appropriate.
-- Do not fabricate precision. Use realistic ranges and well-known sources.
+Priority guide:
+- urgent: Deadline today/tomorrow, blocking other work, time-sensitive legal/financial
+- high: This week, important business deliverable, client-facing
+- medium: This month, nice to do, self-imposed deadline
+- low: Someday, no deadline, nice to have
 
-Tone Rule
-- Assume a sophisticated, fluent, decision-capable reader.
-- Do not simplify unnecessarily. Do not infantilize.
-- Do not use filler encouragement or generic advice.
+Context: Timo is CEO of DevEngine (solar/BESS development), jazz guitarist, lives in Ghent NY.
+Categorize based on content: DevEngine/solar/BESS/investor → work, guitar/jazz → music, house stuff → ghent, etc.`;
 
-**Length Control**
-- If Body contains #short: remove the token, limit output to under 100 words.
-- Otherwise limit to under 1000 words.
+// ─── CALL CLAUDE ──────────────────────────────────────────────────────────
 
-**Domain Depth Models**
-
-1. Historical / Cultural / Event-Based: origin, chronology, actors, context, misconceptions.
-2. Technical / Engineering / Software: system boundaries, mechanisms, dependencies, failure modes.
-3. Business / Strategy: objective, constraints, value drivers, tradeoffs, recommendation.
-4. Finance / Legal / Regulatory: governing rules, timelines, compliance gates, uncertainties.
-5. Personal / Health / Lifestyle: measurable guidance, risks, escalation points.
-6. Creative / Writing: clarity, logic, structure, persuasion, voice alignment.
-7. Music / Jazz / Theory: correct terminology (modes, chord-scale relationships, voice leading, bebop conventions). Reference real musicians, recordings, methods (e.g. Barry Harris). Technically precise about harmony, rhythm, form.
-
-**Type Router**
-- Research: accurate understanding, concrete details.
-- Brainstorm: stress-test ideas, assumptions, failure modes.
-- Decision: compare options, asymmetric risks, give a recommendation.
-- Draft: rewrite clearly, improve structure, include rationale for changes.
-- Tasks: clarify and reorganize only, do not add new tasks.
-- Observation: extract implications, distinguish temporary from durable effects.
-- Shopping: real products, realistic prices, real retailers, three tiers, bold recommendation.
-
-**Structural Integrity Rule**
-Do not force frameworks onto descriptive topics. Do not omit sub-questions. Do not output generalities when specifics are available.`
-
-// ─────────────────────────────────────────────
-// Category definitions
-// ─────────────────────────────────────────────
-const VALID_CATEGORIES = ['work', 'music', 'personal', 'ideas', 'books', 'shopping', 'todos', 'travel/food']
-
-const BRAINDUMP_PROMPT = `You are Sofia processing a brain dump. Parse it into SEPARATE distinct thoughts. For EACH, output:
-
----ENTRY---
-CATEGORY: <work|music|personal|ideas|books|shopping|todos|travel/food>
-TITLE: <short descriptive title>
-
-<Full Markdown content — specific, decision-useful, no filler>
-
----END---
-
-Rules: each thought = own block. Music content = "music". Business content = "work". Min 2, max 8 entries. Markdown only.`
-
-// ─────────────────────────────────────────────
-// Model callers
-// ─────────────────────────────────────────────
-async function callAnthropic(systemPrompt, userMessage) {
+async function callClaude(systemPrompt, userContent) {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -91,180 +101,187 @@ async function callAnthropic(systemPrompt, userMessage) {
     },
     body: JSON.stringify({
       model: 'claude-sonnet-4-20250514',
-      max_tokens: 4000,
+      max_tokens: 1500,
       system: systemPrompt,
-      messages: [{ role: 'user', content: userMessage }],
+      messages: [{ role: 'user', content: userContent }],
     }),
-  })
-  if (!res.ok) throw new Error(`Anthropic error ${res.status}: ${await res.text()}`)
-  const data = await res.json()
-  return data.content?.map(b => b.text || '').join('') || ''
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Claude API error: ${res.status} - ${err}`);
+  }
+
+  const data = await res.json();
+  return data.content[0].text;
 }
 
-async function callOpenAI(systemPrompt, userMessage) {
-  const apiKey = process.env.OPENAI_API_KEY
-  if (!apiKey) throw new Error('OpenAI API key not configured')
+// ─── CALL GPT-4O ──────────────────────────────────────────────────────────
+
+async function callGPT4o(systemPrompt, userContent) {
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error('OpenAI API key not configured');
+  }
+
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+    },
     body: JSON.stringify({
       model: 'gpt-4o',
-      max_tokens: 4000,
-      messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userMessage }],
+      max_tokens: 1500,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userContent },
+      ],
     }),
-  })
-  if (!res.ok) throw new Error(`OpenAI error ${res.status}: ${await res.text()}`)
-  const data = await res.json()
-  return data.choices?.[0]?.message?.content || ''
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`GPT-4o API error: ${res.status} - ${err}`);
+  }
+
+  const data = await res.json();
+  return data.choices[0].message.content;
 }
 
-// ─────────────────────────────────────────────
-// Category classification
-// ─────────────────────────────────────────────
-async function classifyCategory(prompt, aiResponse) {
-  const combined = (prompt + ' ' + aiResponse).toLowerCase()
+// ─── PARSE AI RESPONSE ───────────────────────────────────────────────────
 
-  if (/jazz|bebop|barry harris|chord voic|music theory|guitar lick|ii[\s-]v|tritone sub|arpeggio|comping|walking bass|lead sheet|pentatonic|dorian|mixolydian|lydian|phrygian|locrian|kenny burrell|wes montgomery|pat metheny|joe pass|grant green|freddie green|chord scale|voice leading|improvise/.test(combined)) return 'music'
-  if (/devengin|spring lane|solar project|bess|battery energy|feoc|itc adder|safe harbor|ppa|offtake|megawatt|kwh|utility scale|energy storage|project finance|tax equity/.test(combined)) return 'work'
-  if (/\btodo\b|action item|to-do|checklist/.test(combined)) return 'todos'
-  if (/\bbook\b|novel|reading|chapter|author|literature|memoir|biography/.test(combined)) return 'books'
-  if (/buy|purchase|price range|product review|brand comparison|best.*under \$/.test(combined)) return 'shopping'
-  if (/restaurant|where to eat|trip to|travel|visiting/.test(combined)) return 'travel/food'
+function parseAIResponse(rawText) {
+  // Try to extract JSON from the response
+  let jsonStr = rawText.trim();
+
+  // Strip markdown code fences if present
+  if (jsonStr.startsWith('```')) {
+    jsonStr = jsonStr.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '');
+  }
 
   try {
-    const result = await callAnthropic(
-      `Classify into exactly one of: work, music, personal, ideas, books, shopping, todos, travel/food. Return only the category word.`,
-      `"${prompt.slice(0, 300)}"`
-    )
-    const cleaned = result.trim().toLowerCase().replace(/[^a-z/]/g, '')
-    return VALID_CATEGORIES.includes(cleaned) ? cleaned : 'ideas'
-  } catch {
-    return 'ideas'
+    const parsed = JSON.parse(jsonStr);
+
+    // Validate category
+    if (!CATEGORIES.includes(parsed.category)) {
+      // Try to fuzzy match
+      const lower = (parsed.category || '').toLowerCase();
+      const match = CATEGORIES.find(c => c.toLowerCase() === lower);
+      parsed.category = match || 'personal';
+    }
+
+    // Ensure required fields
+    return {
+      title: parsed.title || 'Untitled Entry',
+      category: parsed.category,
+      summary: parsed.summary || '',
+      tags: Array.isArray(parsed.tags) ? parsed.tags.slice(0, 8) : [],
+      confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0.8,
+      ai_research: parsed.ai_research || { key_findings: [], links: [] },
+      todo_priority: parsed.todo_priority || null,
+      todo_due_date: parsed.todo_due_date || null,
+    };
+  } catch (e) {
+    console.error('Failed to parse AI response as JSON:', e);
+    console.error('Raw text:', rawText.slice(0, 500));
+
+    // Fallback: create a basic entry from the raw text
+    return {
+      title: rawText.slice(0, 60).replace(/[^a-zA-Z0-9 ]/g, '').trim() || 'Processing Error',
+      category: 'personal',
+      summary: rawText.slice(0, 200),
+      tags: [],
+      confidence: 0.3,
+      ai_research: { key_findings: ['Failed to parse structured response'], links: [] },
+      todo_priority: null,
+      todo_due_date: null,
+    };
   }
 }
 
-function generateTitle(prompt) {
-  const cleaned = prompt.replace(/^#(dump|short|challenge)\s*/i, '').trim()
-  return cleaned.length <= 60 ? cleaned : cleaned.slice(0, 57) + '...'
-}
+// ─── MAIN HANDLER ─────────────────────────────────────────────────────────
 
-function parseBrainDump(raw) {
-  return raw.split('---ENTRY---').slice(1).map(block => {
-    const end = block.indexOf('---END---')
-    const content = (end > -1 ? block.slice(0, end) : block).trim()
-    const lines = content.split('\n')
-    let category = 'ideas', title = 'Thought', bodyLines = [], headerDone = false
-    for (const line of lines) {
-      if (!headerDone && line.startsWith('CATEGORY:')) {
-        const val = line.replace('CATEGORY:', '').trim().toLowerCase()
-        category = VALID_CATEGORIES.includes(val) ? val : 'ideas'
-      } else if (!headerDone && line.startsWith('TITLE:')) {
-        title = line.replace('TITLE:', '').trim()
-        headerDone = true
-      } else {
-        bodyLines.push(line)
-      }
-    }
-    return { title, category, content: bodyLines.join('\n').trim() }
-  }).filter(e => e.title && e.content)
-}
-
-// ─────────────────────────────────────────────
-// MAIN HANDLER
-// ─────────────────────────────────────────────
 export async function POST(request) {
   try {
-    const supabase = getSupabase()
-    const body = await request.json()
-
-    // Frontend sends: { content, template_type, template_data, model }
-    // Legacy sends:   { promptBody, promptId, model, mode }
+    const body = await request.json();
     const {
       content,
-      prompt: promptField,
-      promptBody,
-      promptId,
-      model = 'claude',
-      mode,
       template_type = 'freeform',
-      template_data,
-    } = body
+      template_data = null,
+      model = 'claude',
+    } = body;
 
-    const prompt = content || promptField || promptBody
-
-    if (!prompt?.trim()) {
-      return NextResponse.json({ error: 'Prompt is required' }, { status: 400 })
+    if (!content && !template_data) {
+      return NextResponse.json({ error: 'Content or template data required' }, { status: 400 });
     }
 
-    // Get user_id — try prompts table, then fall back to first auth user
-    let userId = null
-    if (promptId) {
-      const { data: promptRecord } = await supabase
-        .from('prompts').select('user_id').eq('id', promptId).single()
-      userId = promptRecord?.user_id ?? null
-    }
-    if (!userId) {
-      try {
-        const result = await supabase.auth.admin.listUsers({ perPage: 1 })
-        userId = result?.data?.users?.[0]?.id ?? null
-      } catch (e) {
-        console.error('listUsers failed:', e.message)
+    // Build input text
+    let inputText = content || '';
+    if (template_data && Object.keys(template_data).length > 0) {
+      inputText += '\n\n--- Structured Fields ---\n';
+      for (const [key, value] of Object.entries(template_data)) {
+        if (value) inputText += `${key}: ${value}\n`;
       }
     }
 
-    const isBrainDump = /^#dump\s/i.test(prompt.trim()) || mode === 'brain_dump'
-    const isChallenge = /^#challenge\s/i.test(prompt.trim()) || mode === 'challenge'
-    const caller = model === 'gpt4' ? callOpenAI : callAnthropic
-    const modelLabel = model === 'gpt4' ? 'gpt-4o' : 'claude-sonnet-4'
-
-    // ── Brain Dump ──
-    if (isBrainDump) {
-      const cleanPrompt = prompt.replace(/^#dump\s*/i, '').trim()
-      const raw = await caller(BRAINDUMP_PROMPT, cleanPrompt)
-      const parsed = parseBrainDump(raw)
-      if (parsed.length === 0) return NextResponse.json({ error: 'Could not parse brain dump' }, { status: 500 })
-
-      const inserted = []
-      for (const e of parsed) {
-        const { data } = await supabase.from('entries').insert({
-          user_id: userId, title: e.title,
-          content: e.content, response: e.content, summary: e.content,
-          original_content: cleanPrompt, body: cleanPrompt,
-          category: e.category, model: modelLabel,
-        }).select().single()
-        if (data) inserted.push(data)
-      }
-
-      if (promptId) await supabase.from('prompts').update({ status: 'Completed', processed_at: new Date().toISOString() }).eq('id', promptId)
-      return NextResponse.json({ entries: inserted, type: 'brain_dump' })
+    // Add template context to the input
+    if (template_type !== 'freeform') {
+      inputText = `[Template: ${template_type}]\n${inputText}`;
     }
 
-    // ── Standard + Challenge ──
-    const systemPrompt = isChallenge
-      ? SOFIA_SYSTEM_PROMPT + '\n\nChallenge mode: steelman the opposite view rigorously. Find genuine weaknesses. Do not be a pushover.'
-      : SOFIA_SYSTEM_PROMPT
+    // Choose system prompt
+    const systemPrompt = template_type === 'todo' ? TODO_SYSTEM_PROMPT : SOFIA_SYSTEM_PROMPT;
 
-    const cleanPrompt = prompt.replace(/^#(short|challenge)\s*/i, '').trim()
-    const aiResponse = await caller(systemPrompt, cleanPrompt)
-    const category = await classifyCategory(cleanPrompt, aiResponse)
-    const title = generateTitle(cleanPrompt)
+    // Call AI
+    let rawResponse;
+    if (model === 'gpt4o') {
+      rawResponse = await callGPT4o(systemPrompt, inputText);
+    } else {
+      rawResponse = await callClaude(systemPrompt, inputText);
+    }
 
-    const { data: entry, error } = await supabase.from('entries').insert({
-      user_id: userId, title,
-      content: aiResponse, response: aiResponse, summary: aiResponse,
-      original_content: cleanPrompt, body: cleanPrompt,
-      category, model: modelLabel,
-    }).select().single()
+    // Parse
+    const parsed = parseAIResponse(rawResponse);
 
-    if (error) throw error
+    // Insert into Supabase
+    const insertData = {
+      title: parsed.title,
+      category: parsed.category,
+      summary: parsed.summary,
+      tags: parsed.tags,
+      confidence: parsed.confidence,
+      ai_research: parsed.ai_research,
+      raw_content: content || '',
+      template_type: template_type,
+      template_data: template_data,
+      model: model,
+      reviewed: false,
+      pinned: false,
+      starred: false,
+    };
 
-    if (promptId) await supabase.from('prompts').update({ status: 'Completed', processed_at: new Date().toISOString() }).eq('id', promptId)
+    // Add todo fields if applicable
+    if (template_type === 'todo') {
+      insertData.todo_priority = parsed.todo_priority || 'medium';
+      insertData.todo_due_date = parsed.todo_due_date || null;
+      insertData.todo_completed = false;
+    }
 
-    // Return both formats for compatibility
-    return NextResponse.json({ entry, entries: [entry], category, success: true })
+    const { data: entry, error: insertError } = await supabase
+      .from('entries')
+      .insert(insertData)
+      .select()
+      .single();
+
+    if (insertError) {
+      console.error('Supabase insert error:', insertError);
+      return NextResponse.json({ error: 'Failed to save entry: ' + insertError.message }, { status: 500 });
+    }
+
+    return NextResponse.json({ success: true, entry });
 
   } catch (err) {
-    console.error('Process error:', err)
-    return NextResponse.json({ error: err.message }, { status: 500 })
+    console.error('Processing error:', err);
+    return NextResponse.json({ error: 'Processing failed: ' + err.message }, { status: 500 });
   }
 }
